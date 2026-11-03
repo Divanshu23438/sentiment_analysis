@@ -1,0 +1,1 @@
+"""IndicPulse – Project Root Package."""
