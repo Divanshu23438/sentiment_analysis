@@ -854,6 +854,18 @@ with st.sidebar:
 # ===============================================================
 # 3. HELPER: 3D MECHANICAL ODOMETER SCORE COMPONENT & BENTO GRID
 # ===============================================================
+def render_info_btn(tooltip: str, title: str = "") -> str:
+    """Renders a sleek interactive (i) popover button with high-contrast hover card and native fallback."""
+    if not tooltip:
+        return ""
+    escaped_tip = str(tooltip).replace('"', '&quot;').replace("'", "&#39;")
+    title_html = f'<div style="font-weight:700; margin-bottom:4px; color:#FDE68A; font-size:12px;">{title}</div>' if title else ''
+    return f'''<span class="info-popover-wrap" title="{escaped_tip}">
+        <span class="info-popover-btn">i</span>
+        <span class="info-popover-card">{title_html}{escaped_tip}</span>
+    </span>'''
+
+
 def render_odometer_score(value_str: str, label: str, subtitle: str = "", theme: str = "mint", info_tooltip: str = "") -> str:
     """Render a 3D Mechanical Odometer / Rolling Digit Counter inside a Bento Card theme with interactive (i) explanation button."""
     digits_html = []
@@ -867,8 +879,7 @@ def render_odometer_score(value_str: str, label: str, subtitle: str = "", theme:
     odo_bar = f'<div class="odo-container">{"".join(digits_html)}</div>'
     sub_html = f'<div style="font-size:11px; font-weight:600; opacity:0.85; margin-top:8px;">{subtitle}</div>' if subtitle else ''
 
-    escaped_tooltip = str(info_tooltip).replace('"', '&quot;').replace("'", "&#39;")
-    info_html = f'<span class="info-circle has-tooltip" data-tooltip="{escaped_tooltip}" aria-label="Score Explanation">i</span>' if info_tooltip else ''
+    info_html = render_info_btn(info_tooltip, title=label)
 
     return f"""
     <div class="bento-{theme}" style="min-height:140px; display:flex; flex-direction:column; justify-content:space-between; box-sizing:border-box;">
@@ -1082,17 +1093,21 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
 
     # ── RIGHT ZONE ─────────────────────────────────────────────
     with right_zone:
-        st.markdown("""
+        pulse_info = render_info_btn(
+            "Pulse Score (0-10): Overall health score of audience reception. 8.5-10 = Viral Hype & Strong Community Praise; 7.0-8.4 = Strongly Positive; 5.0-6.9 = Mixed; <5.0 = Critical Friction.",
+            title="Community Sentiment Pulse"
+        )
+        st.markdown(f"""
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <span style="font-size:14px; font-weight:700; color:#64748B;">Community Sentiment Pulse</span>
-            <span class="info-circle has-tooltip" data-tooltip="Pulse Score (0-10): Overall health score of audience reception. 8.5-10 = Viral Hype & Strong Community Praise; 7.0-8.4 = Strongly Positive; 5.0-6.9 = Mixed; <5.0 = Critical Friction." aria-label="Pulse Score Explanation">i</span>
+            {pulse_info}
         </div>
         """, unsafe_allow_html=True)
 
         with st.container(border=True):
             st.markdown("<div style='font-size:13px; font-weight:700; color:#1E293B;'>Radial Speedometer Gauge</div>", unsafe_allow_html=True)
             fig_gauge = charts.pulse_gauge_chart(pulse_score, colorblind_safe=st.session_state.colorblind_mode)
-            st.plotly_chart(fig_gauge, use_container_width=True)
+            st.plotly_chart(fig_gauge, use_container_width=True, theme=None)
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
         st.markdown("<div style='font-size:14px; font-weight:700; color:#64748B; margin-bottom:10px;'>Mood Distribution</div>", unsafe_allow_html=True)
@@ -1100,13 +1115,17 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
         with st.container(border=True):
             st.markdown("<div style='font-size:13px; font-weight:700; color:#1E293B;'>Engagement-Weighted Breakdown</div>", unsafe_allow_html=True)
             fig_pie = charts.mood_donut_chart(df_mood, colorblind_safe=st.session_state.colorblind_mode)
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, use_container_width=True, theme=None)
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-        st.markdown("""
+        clusters_info = render_info_btn(
+            "Semantic Topic Clusters: Distinct thematic conversation themes discovered across comments using IndicSBERT embeddings. Click 'Inspect' on any cluster to view its underlying comments in the inspector below.",
+            title="Top Semantic Clusters"
+        )
+        st.markdown(f"""
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <span style="font-size:14px; font-weight:700; color:#64748B;">Top Semantic Clusters</span>
-            <span class="info-circle has-tooltip" data-tooltip="Semantic Topic Clusters: Distinct thematic conversation themes discovered across comments using IndicSBERT embeddings. Click 'Inspect' on any cluster to view its underlying comments in the inspector below." aria-label="Topic Clusters Explanation">i</span>
+            {clusters_info}
         </div>
         """, unsafe_allow_html=True)
 
@@ -1559,11 +1578,12 @@ elif st.session_state.active_page == "Dashboard":
         # Row 1: 4 Cumulative Pastel Bento KPIs
         k1, k2, k3, k4 = st.columns(4)
         with k1:
+            i_k1 = render_info_btn("Total Ingested Datasets: Number of YouTube videos or CSV uploads analyzed across all user sessions.", title="Total Datasets")
             st.markdown(f"""
             <div class="bento-mint">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Total Datasets</span>
-                    <span class="info-circle has-tooltip" data-tooltip="Total Ingested Datasets: Number of YouTube videos or CSV uploads analyzed across all user sessions." aria-label="Datasets Explanation">i</span>
+                    {i_k1}
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:8px;">
                     <span style="font-size:32px; font-weight:800;">{cum_links}</span>
@@ -1579,12 +1599,13 @@ elif st.session_state.active_page == "Dashboard":
                 args=(f"All Aggregated Comments ({cum_comments:,})", "ALL", None),
             )
         with k2:
+            i_k2 = render_info_btn("Overall Approval Score: Log-weighted sentiment ratio across all analyzed videos. Ensures viral comments with 10,000+ likes carry proportional weight.", title="Overall Approval")
             st.markdown(f"""
             <div class="bento-yellow">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Overall Approval</span>
                     <div style="display:flex; align-items:center; gap:6px;">
-                        <span class="info-circle has-tooltip" data-tooltip="Overall Approval Score: Log-weighted sentiment ratio across all analyzed videos. Ensures viral comments with 10,000+ likes carry proportional weight." aria-label="Approval Explanation">i</span>
+                        {i_k2}
                         <span class="arrow-circle">↗</span>
                     </div>
                 </div>
@@ -1602,12 +1623,13 @@ elif st.session_state.active_page == "Dashboard":
                 args=("Aggregated Positive Hype Comments", "MOOD", "Positive"),
             )
         with k3:
+            i_k3 = render_info_btn("Sarcasm & Irony: Total comments identified with mock praise, sarcasm emojis, or irony patterns across all datasets.", title="Sarcasm Caught")
             st.markdown(f"""
             <div class="bento-purple">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Sarcasm Caught</span>
                     <div style="display:flex; align-items:center; gap:6px;">
-                        <span class="info-circle has-tooltip" data-tooltip="Sarcasm & Irony: Total comments identified with mock praise, sarcasm emojis, or irony patterns across all datasets." aria-label="Sarcasm Explanation">i</span>
+                        {i_k3}
                         <span class="arrow-circle">↗</span>
                     </div>
                 </div>
@@ -1625,12 +1647,13 @@ elif st.session_state.active_page == "Dashboard":
                 args=(f"Aggregated Sarcastic Comments ({cum_sarcasm})", "SARCASM", None),
             )
         with k4:
+            i_k4 = render_info_btn("Quarantined Toxic: Total abusive, hateful, or hostile comments filtered out across all analyzed datasets to safeguard community intelligence.", title="Quarantined Toxic")
             st.markdown(f"""
             <div class="bento-pink">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Quarantined Toxic</span>
                     <div style="display:flex; align-items:center; gap:6px;">
-                        <span class="info-circle has-tooltip" data-tooltip="Quarantined Toxic: Total abusive, hateful, or hostile comments filtered out across all analyzed datasets to safeguard community intelligence." aria-label="Quarantine Explanation">i</span>
+                        {i_k4}
                         <span class="arrow-circle">↗</span>
                     </div>
                 </div>
@@ -1683,7 +1706,7 @@ elif st.session_state.active_page == "Dashboard":
                     xaxis=dict(showgrid=True, gridcolor="#EAEEF4", tickfont=dict(family="Plus Jakarta Sans", size=11)),
                     yaxis=dict(tickfont=dict(family="Plus Jakarta Sans", size=11)),
                 )
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, use_container_width=True, theme=None)
 
             # Combined Latest Gemini Executive Insights
             with st.container(border=True):
@@ -1695,7 +1718,7 @@ elif st.session_state.active_page == "Dashboard":
             with st.container(border=True):
                 st.markdown("<div style='font-size:14px; font-weight:800; color:#1E293B;'>Cumulative Mood Distribution</div>", unsafe_allow_html=True)
                 fig_pie_cum = charts.mood_donut_chart(all_moods, colorblind_safe=st.session_state.colorblind_mode)
-                st.plotly_chart(fig_pie_cum, use_container_width=True)
+                st.plotly_chart(fig_pie_cum, use_container_width=True, theme=None)
 
             # Top Recurring Topic Clusters
             st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)

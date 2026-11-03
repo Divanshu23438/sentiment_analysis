@@ -66,6 +66,7 @@ CHART_THEME = dict(
     plot_bgcolor="rgba(0,0,0,0)",
     font=dict(family="Plus Jakarta Sans, Inter, sans-serif", color="#64748B", size=12),
     margin=dict(l=10, r=10, t=30, b=10),
+    template="plotly_white",
 )
 
 

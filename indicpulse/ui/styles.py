@@ -320,7 +320,7 @@ div[data-testid="stDownloadButton"] > button:hover {{
     border-radius: var(--radius-bento);
     padding: 1.5rem 1.6rem;
     position: relative;
-    overflow: hidden;
+    overflow: visible !important;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
@@ -333,6 +333,7 @@ div[data-testid="stDownloadButton"] > button:hover {{
     border: {border_bento or "1px solid var(--mint-border)"};
     color: var(--mint-text);
     box-shadow: 0 4px 18px rgba(15, 81, 50, 0.04);
+    overflow: visible !important;
 }}
 
 /* 2. Blush Pastel Pink Card */
@@ -341,6 +342,7 @@ div[data-testid="stDownloadButton"] > button:hover {{
     border: {border_bento or "1px solid var(--pink-border)"};
     color: var(--pink-text);
     box-shadow: 0 4px 18px rgba(136, 19, 55, 0.04);
+    overflow: visible !important;
 }}
 
 /* 3. Warm Buttercream Yellow Card */
@@ -349,6 +351,7 @@ div[data-testid="stDownloadButton"] > button:hover {{
     border: {border_bento or "1px solid var(--yellow-border)"};
     color: var(--yellow-text);
     box-shadow: 0 4px 18px rgba(113, 63, 18, 0.04);
+    overflow: visible !important;
 }}
 
 /* 4. Soft Lavender Purple Card */
@@ -357,6 +360,7 @@ div[data-testid="stDownloadButton"] > button:hover {{
     border: {border_bento or "1px solid var(--purple-border)"};
     color: var(--purple-text);
     box-shadow: 0 4px 18px rgba(76, 29, 149, 0.04);
+    overflow: visible !important;
 }}
 
 /* 5. Pure White Container Card */
@@ -366,6 +370,7 @@ div[data-testid="stDownloadButton"] > button:hover {{
     border-radius: var(--radius-bento);
     padding: 1.6rem;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+    overflow: visible !important;
 }}
 
 /* ── MICRO-BADGES & ACCENT ICONS ──────────────────────── */
@@ -561,32 +566,88 @@ div[data-testid="stTabs"] button[aria-selected="true"] {{
 }}
 
 /* ── SCORE INFORMATION TOOLTIPS & INFO (i) BUTTONS ─────── */
+.info-popover-wrap {{
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    vertical-align: middle;
+    z-index: 999;
+}}
+
+.info-popover-btn,
 .info-circle {{
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 19px;
-    height: 19px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
     background: rgba(24, 24, 27, 0.08);
     color: #18181B;
     font-size: 11px;
     font-weight: 800;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    cursor: help;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-    border: 1px solid rgba(24, 24, 27, 0.15);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border: 1px solid rgba(24, 24, 27, 0.16);
     user-select: none;
     line-height: 1;
 }}
 
+.info-popover-wrap:hover .info-popover-btn,
 .info-circle:hover {{
     background: #18181B !important;
     color: #FFFFFF !important;
-    transform: scale(1.1);
+    border-color: #18181B !important;
+    transform: scale(1.08);
     box-shadow: 0 2px 8px rgba(24, 24, 27, 0.25);
 }}
 
+.info-popover-card {{
+    position: absolute;
+    top: calc(100% + 8px);
+    right: -6px;
+    width: 250px;
+    max-width: 85vw;
+    background: #18181B;
+    color: #F8FAFC;
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 1.5;
+    padding: 10px 14px;
+    border-radius: 10px;
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.35);
+    z-index: 9999999 !important;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px);
+    transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+    pointer-events: none;
+    text-transform: none;
+    letter-spacing: normal;
+    text-align: left;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+}}
+
+.info-popover-card::before {{
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    right: 10px;
+    border-width: 0 6px 6px 6px;
+    border-style: solid;
+    border-color: transparent transparent #18181B transparent;
+}}
+
+.info-popover-wrap:hover .info-popover-card {{
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: translateY(0) !important;
+}}
+
+/* Backward-compatible tooltip fallback */
 .has-tooltip {{
     position: relative;
     cursor: help;
@@ -595,48 +656,49 @@ div[data-testid="stTabs"] button[aria-selected="true"] {{
 .has-tooltip::after {{
     content: attr(data-tooltip);
     position: absolute;
-    bottom: calc(100% + 8px);
-    right: -8px;
+    top: calc(100% + 8px);
+    right: -6px;
+    width: 250px;
+    max-width: 85vw;
     background: #18181B;
-    color: #FFFFFF;
+    color: #F8FAFC;
     font-size: 11.5px;
     font-weight: 500;
     line-height: 1.5;
     padding: 10px 14px;
     border-radius: 10px;
-    white-space: normal;
-    width: 260px;
-    z-index: 999999;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-    pointer-events: none;
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.35);
+    z-index: 9999999 !important;
     opacity: 0;
     visibility: hidden;
-    transform: translateY(4px);
-    transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    transform: translateY(-4px);
+    transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+    pointer-events: none;
     text-transform: none;
     letter-spacing: normal;
+    text-align: left;
+    border: 1px solid rgba(255, 255, 255, 0.16);
 }}
 
 .has-tooltip::before {{
     content: '';
     position: absolute;
-    bottom: calc(100% + 2px);
-    right: 4px;
-    border-width: 6px 6px 0 6px;
+    top: calc(100% + 2px);
+    right: 8px;
+    border-width: 0 6px 6px 6px;
     border-style: solid;
-    border-color: #18181B transparent transparent transparent;
-    z-index: 999999;
+    border-color: transparent transparent #18181B transparent;
+    z-index: 9999999 !important;
     opacity: 0;
     visibility: hidden;
-    transition: opacity 0.2s ease, visibility 0.2s ease;
+    transition: opacity 0.18s ease, visibility 0.18s ease;
 }}
 
 .has-tooltip:hover::after,
 .has-tooltip:hover::before {{
-    opacity: 1;
-    visibility: visible;
-    transform: translateY(0);
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: translateY(0) !important;
 }}
 </style>
 """
