@@ -98,6 +98,8 @@ def run_mood_classification(df: pd.DataFrame, model_name: Optional[str] = None, 
     df_res["text_for_muril"] = df_res.get("text_for_mood", df_res["text"])
     df_res["raw_text"] = df_res["text"]
     df_res["likes"] = df_res["like_count"]
+    if hasattr(df, "attrs"):
+        df_res.attrs = df.attrs.copy()
     return df_res
 
 
@@ -111,11 +113,21 @@ def run_topic_clustering(df: pd.DataFrame) -> pd.DataFrame:
     df_clust["raw_text"] = df_clust["text"]
     df_clust["likes"] = df_clust["like_count"]
     df_clust["text_for_muril"] = df_clust.get("text_for_mood", df_clust["text"])
+    if hasattr(df, "attrs"):
+        df_clust.attrs = df.attrs.copy()
     return df_clust
 
 
-def generate_executive_summary(df_clustered: pd.DataFrame, api_key: str) -> str:
-    """Synthesize 4-part action report using Gemini 2.5 Flash and format as readable, scannable Markdown."""
+def generate_executive_summary(
+    df_clustered: pd.DataFrame,
+    api_key: str,
+    video_title: Optional[str] = None,
+    channel_title: Optional[str] = None,
+) -> str:
+    """Synthesize 4-part video-specific action report using Gemini 2.5 Flash and format as clean Markdown."""
+    v_title = video_title or df_clustered.attrs.get("video_title", "Video Analysis")
+    c_title = channel_title or df_clustered.attrs.get("channel_title", "Creator")
+
     # Build topic_summary dictionary from df_clustered if not available
     topic_summary = {}
     for tid in df_clustered["topic_id"].unique():
@@ -125,51 +137,51 @@ def generate_executive_summary(df_clustered: pd.DataFrame, api_key: str) -> str:
             "label": lbl,
             "size": len(cluster),
             "top_words": cluster["text_for_topic"].str.split().explode().value_counts().head(6).index.tolist() if "text_for_topic" in cluster.columns else [],
-            "representative_comments": cluster.head(3)[["text", "like_count", "mood_label"]].to_dict("records") if "mood_label" in cluster.columns else [],
+            "representative_comments": cluster.head(4)[["text", "like_count", "mood_label"]].to_dict("records") if "mood_label" in cluster.columns else [],
             "avg_engagement": cluster["engagement_weight"].mean() if "engagement_weight" in cluster.columns else 1.0,
         }
 
-    raw_summary = _gen_exec_summary(topic_summary, df_clustered, api_key=api_key, source="YouTube/Dataset")
+    raw_summary = _gen_exec_summary(
+        topic_summary=topic_summary,
+        df=df_clustered,
+        api_key=api_key,
+        video_title=v_title,
+        channel_title=c_title,
+    )
 
-    # Extract 4 core structured sections
-    al = raw_summary.get("audience_loved", {})
-    comp = raw_summary.get("complaints", {})
-    ca = raw_summary.get("creator_actions", {})
-    vm = raw_summary.get("viral_moments", {})
-    sv = raw_summary.get("sentiment_verdict", {})
+    vc = raw_summary.get("viewer_consensus", {})
+    wvl = raw_summary.get("what_viewers_loved", {})
+    cd = raw_summary.get("criticisms_and_debates", {})
+    vr = raw_summary.get("viewer_requests_and_next_steps", {})
 
-    loved_themes = ", ".join([f"`#{t}`" for t in al.get("key_themes", [])]) or "`#Authentic`"
-    comp_issues = ", ".join([f"`• {i}`" for i in comp.get("key_issues", [])]) or "`• Audio balancing`"
-    actions = "\n".join([f"**{i+1}.** {act}" for i, act in enumerate(ca.get("action_items", []))]) or "**1.** Balance vocal tracks against background music."
+    loved_quotes = "\n".join([f"> 💬 *{q}*" for q in wvl.get("quotes", [])])
+    debate_quotes = "\n".join([f"> 💬 *{q}*" for q in cd.get("quotes", [])])
+    action_items = "\n".join([f"**{i+1}.** {act}" for i, act in enumerate(vr.get("actionable_steps", []))])
 
-    md_output = f"""#### Community Sentiment Verdict
-> **Verdict:** **{sv.get('overall_tone', 'Positive')}** — *"{sv.get('one_liner', '')}"*  
-> **Pulse Score:** `{sv.get('pulse_score', 8.0)}/10` • **Cultural Nuance:** {sv.get('cultural_note', 'Hinglish code-mixing and peer expressions detected.')}
-
----
-
-#### What Audience Loved
-{al.get('summary', 'Audience praised the clear presentation and genuine delivery.')}  
-- **Top Aspect:** **{al.get('top_praised_aspect', 'High-quality research')}**  
-- **Key Themes:** {loved_themes}
+    md_output = f"""### 🎯 What Viewers Actually Think About This Video
+> **Audience Verdict:** **{vc.get('overall_sentiment', 'Engaged & Positive')}** • **Pulse Score:** `{vc.get('pulse_score', 8.5)}/10`  
+> **Summary:** {vc.get('subject_summary', f'Strong viewer engagement around discussions in {v_title}.')}  
+> **Cultural Nuance:** {vc.get('cultural_nuance', 'Hinglish slang and regional expressions detected across top reactions.')}
 
 ---
 
-#### Core Technical & Content Complaints
-{comp.get('summary', 'Constructive viewer feedback centered on audio volume balancing and pacing.')}  
-- **Critical Grievance:** **{comp.get('most_critical_complaint', 'Audio volume balancing')}**  
-- **Key Issues:** {comp_issues}
+### ❤️ What Viewers Loved Most
+{wvl.get('summary', 'Audience expressed strong appreciation for the conversation and guest delivery.')}  
+- **Top Acclaimed Element:** **{wvl.get('top_praised_moment', 'Key conversational segments')}**  
+{loved_quotes}
 
 ---
 
-#### Actionable Creator Next Steps
-{actions}  
-- **Immediate Priority:** **{ca.get('priority_action', 'Normalize audio levels in next release')}**
+### ⚡ Viewer Criticisms, Debates & Friction
+{cd.get('summary', 'Debates centered on discussion interpretations and humorous peer banter.')}  
+- **Primary Debate / Discussion:** **{cd.get('key_controversy', 'Differing perspectives on conversational statements')}**  
+{debate_quotes}
 
 ---
 
-#### Community Humor & Virality
-{vm.get('summary', 'Top-liked comments clustered on relatable Hinglish slang and memes.')}  
-- **Virality Driver:** **{vm.get('virality_driver', 'Engaging storytelling and relatable dialect')}**
+### 🚀 Top Viewer Demands & What They Want Next
+{vr.get('summary', 'Audience actively asked for follow-up content and related guest collaborations.')}  
+- **Top Community Request:** **{vr.get('top_request', 'Part 2 / uncut conversation release')}**  
+{action_items}
 """
     return md_output

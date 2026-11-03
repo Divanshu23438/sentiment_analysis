@@ -8,13 +8,82 @@ Engagement-weighted scoring: W = log10(likes + 1) + 1
 """
 
 import logging
+import re
 import numpy as np
 import pandas as pd
 from typing import List, Optional, Dict, Any, Tuple
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 
 INDICBERT_MODEL = "l3cube-pune/indic-sentence-bert-nli"
+
+# ──────────────────────────────────────────────
+# HINGLISH & ENGLISH STOPWORDS
+# Prevents generic conversational filler words from dominating topic titles
+# ──────────────────────────────────────────────
+HINGLISH_STOPWORDS = {
+    # Hindi / Hinglish pronouns, auxiliary verbs, particles
+    "hai", "hain", "ho", "tha", "thi", "the", "hoga", "hogi", "hoge",
+    "ka", "ki", "ke", "ko", "se", "me", "mein", "par", "pe", "tak",
+    "aur", "ya", "toh", "to", "bhi", "hi", "he", "na", "nahi", "nhi", "mat",
+    "kya", "kyu", "kyun", "kaise", "kab", "kaha", "kahan", "kitna", "kitni",
+    "yeh", "ye", "woh", "wo", "is", "us", "in", "un", "iska", "iski", "iske",
+    "uska", "uski", "uske", "inka", "inki", "inke", "unka", "unki", "unke",
+    "main", "hum", "mera", "meri", "mere", "hamara", "hamari", "hamare",
+    "tu", "tum", "tera", "teri", "tere", "tumhara", "tumhari", "tumhare",
+    "aap", "aapka", "aapki", "aapke", "apna", "apni", "apne", "kuch", "koi",
+    "sab", "sabhi", "karo", "kare", "karna", "karte", "karti", "kiya", "kiye",
+    "raha", "rahi", "rahe", "gaya", "gayi", "gaye", "baat", "wala", "wali", "wale",
+    "bohot", "bahut", "zyaada", "zyada", "kam", "thora", "thoda", "ekdum", "lagta",
+    # English generic fillers in comment threads
+    "video", "videos", "channel", "bro", "bhai", "sir", "guys", "guy",
+    "like", "likes", "comment", "comments", "share", "subscribe", "please",
+    "watch", "watching", "see", "seen", "view", "views", "look", "time",
+    "really", "very", "much", "also", "just", "even", "still", "always",
+    "now", "then", "here", "there", "this", "that", "these", "those",
+    "one", "two", "first", "second", "last", "next", "good", "bad",
+    "content", "creator", "yt", "youtube", "full", "part", "ep",
+}
+
+
+def format_topic_label(words: List[str], max_words: int = 3) -> str:
+    """
+    Convert raw BERTopic / n-gram keyword strings into clean, human-readable titles.
+    e.g., ['stan', 'podcast', 'episode', 'rap'] -> 'MC Stan & Podcast Rap'
+    """
+    filtered = []
+    for w in words:
+        clean = re.sub(r"^\d+_", "", str(w)).strip().lower()
+        clean = re.sub(r"[^\w\s]", "", clean)
+        if clean and clean not in HINGLISH_STOPWORDS and len(clean) > 2:
+            if clean in ["stan", "mc"]:
+                filtered.append("MC Stan")
+            elif clean == "prakhar":
+                filtered.append("Prakhar")
+            elif clean in ["cypher", "cyphers"]:
+                filtered.append("Cypher")
+            elif clean in ["hiphop", "hip-hop"]:
+                filtered.append("Hip-Hop")
+            elif clean == "bigg":
+                filtered.append("Bigg Boss")
+            else:
+                filtered.append(clean.title())
+        # Deduplicate while preserving order
+        deduped = list(dict.fromkeys(filtered))
+        if len(deduped) >= max_words:
+            filtered = deduped
+            break
+
+    deduped = list(dict.fromkeys(filtered))
+    if not deduped:
+        return "Key Audience Discussion"
+    if len(deduped) == 1:
+        return f"{deduped[0]} Discussion"
+    elif len(deduped) == 2:
+        return f"{deduped[0]} & {deduped[1]}"
+    else:
+        return f"{deduped[0]}, {deduped[1]} & {deduped[2]}"
 
 
 # ──────────────────────────────────────────────
@@ -136,7 +205,7 @@ def build_topic_model(
 
     vectorizer = CountVectorizer(
         ngram_range=(1, 2),
-        stop_words=None,
+        stop_words=list(HINGLISH_STOPWORDS),
         min_df=2,
     )
 
@@ -155,53 +224,57 @@ def build_topic_model(
 
 def _fallback_keyword_clustering(df_constructive: pd.DataFrame, top_n_words: int = 8) -> Tuple[pd.DataFrame, Any, Dict]:
     """
-    Lightweight heuristic clustering fallback when sentence-transformers or BERTopic
-    is not installed. Clusters comments into intuitive thematic buckets based on
-    Hinglish and English domain keywords.
+    Data-driven heuristic clustering fallback.
+    Extracts real salient terms from constructive comments so discovered topics strictly
+    reflect actual video content (e.g. guest names, interview topics, show references),
+    avoiding generic hardcoded audio/pricing templates.
     """
-    themes = {
-        0: {
-            "label": "Video Production & Editing",
-            "keywords": ["editing", "video", "camera", "transition", "transitions", "color", "grading", "clean", "smooth", "thumbnail", "production"],
-        },
-        1: {
-            "label": "Audio & Sound Quality",
-            "keywords": ["audio", "sound", "voice", "music", "loud", "volume", "background", "dab", "low"],
-        },
-        2: {
-            "label": "Pricing, Delivery & Service",
-            "keywords": ["price", "pricing", "mehenga", "delivery", "refund", "service", "customer", "packaging", "expensive", "cost"],
-        },
-        3: {
-            "label": "Script, Pacing & Research",
-            "keywords": ["script", "research", "speed", "explanation", "notes", "concept", "data", "point", "weak", "information", "detail"],
-        },
-        4: {
-            "label": "Audience Hype & Appreciation",
-            "keywords": ["fire", "love", "subscriber", "badiya", "mast", "superb", "outstanding", "waah", "best", "keep", "genuine"],
-        },
-    }
+    all_tokens = []
+    comment_tokens_list = []
+    for text in df_constructive.get("text_for_topic", df_constructive["text"]):
+        t_clean = re.sub(r"[^\w\s]", " ", str(text).lower())
+        tokens = [w for w in t_clean.split() if len(w) > 2 and w not in HINGLISH_STOPWORDS]
+        comment_tokens_list.append(tokens)
+        all_tokens.extend(tokens)
+
+    counts = Counter(all_tokens)
+    top_candidates = [word for word, cnt in counts.most_common(20) if cnt >= 2]
+
+    # Form up to 4 thematic clusters around the top content anchors
+    theme_anchors = []
+    seen = set()
+    for cand in top_candidates:
+        if cand not in seen:
+            theme_anchors.append(cand)
+            seen.add(cand)
+            if len(theme_anchors) >= 4:
+                break
+
+    if not theme_anchors:
+        theme_anchors = ["audience feedback"]
 
     assigned_topics = []
-    for _, row in df_constructive.iterrows():
-        text_lower = str(row.get("text_for_topic", "")).lower()
-        matched_tid = -1
-        max_matches = 0
-        for tid, tinfo in themes.items():
-            matches = sum(1 for kw in tinfo["keywords"] if kw in text_lower)
-            if matches > max_matches:
-                max_matches = matches
-                matched_tid = tid
-        assigned_topics.append(matched_tid if max_matches > 0 else -1)
+    for tokens in comment_tokens_list:
+        assigned = -1
+        for idx, anchor in enumerate(theme_anchors):
+            if anchor in tokens:
+                assigned = idx
+                break
+        assigned_topics.append(assigned)
 
     df_constructive["topic_id"] = assigned_topics
-    topic_label_map = {tid: tinfo["label"] for tid, tinfo in themes.items()}
+    topic_label_map = {
+        idx: format_topic_label([anchor] + [w for w, _ in counts.most_common(6) if w != anchor])
+        for idx, anchor in enumerate(theme_anchors)
+    }
     topic_label_map[-1] = "General Discussion"
     df_constructive["topic_label"] = df_constructive["topic_id"].map(lambda x: topic_label_map.get(x, "General Discussion"))
 
     topic_summary = {}
     for tid_raw in df_constructive["topic_id"].unique():
         tid = int(tid_raw)
+        if tid == -1 and len(df_constructive["topic_id"].unique()) > 1:
+            continue
         cluster = df_constructive[df_constructive["topic_id"] == tid_raw].copy()
         if cluster.empty:
             continue
@@ -210,7 +283,7 @@ def _fallback_keyword_clustering(df_constructive: pd.DataFrame, top_n_words: int
         else:
             cluster = cluster.sort_values("like_count", ascending=False)
 
-        top_words = themes.get(tid, {}).get("keywords", ["discussion", "feedback"])[:top_n_words]
+        top_words = [theme_anchors[tid]] if (0 <= tid < len(theme_anchors)) else ["discussion"]
         rep_comments = (
             cluster.head(5)[["text", "like_count", "mood_label"]].to_dict("records")
             if "mood_label" in cluster.columns
@@ -236,7 +309,7 @@ def cluster_topics(
     top_n_words: int = 8,
 ) -> Tuple[pd.DataFrame, Any, Dict]:
     """
-    Run full semantic topic clustering on non-toxic comments.
+    Run full semantic topic clustering strictly on non-toxic constructive comments.
 
     Returns
     -------
@@ -244,13 +317,19 @@ def cluster_topics(
     topic_model    : BERTopic instance
     topic_summary  : Dict  – {topic_id: {label, size, top_words, representative_comments}}
     """
+    # Strict isolation: exclude Toxic / Abusive comments completely
     constructive_mask = ~df["is_toxic"] if "is_toxic" in df.columns else pd.Series([True] * len(df))
+    if "mood" in df.columns:
+        constructive_mask = constructive_mask & (~df["mood"].astype(str).str.contains("Toxic"))
+    if "mood_label" in df.columns:
+        constructive_mask = constructive_mask & (df["mood_label"] != "Toxic")
+
     df_constructive = df[constructive_mask].copy().reset_index(drop=True)
 
     if len(df_constructive) < 5:
         logger.warning(f"Only {len(df_constructive)} constructive comments — too few to cluster.")
         df["topic_id"] = -1
-        df["topic_label"] = "Unclustered"
+        df["topic_label"] = "General Discussion"
         return df, None, {}
 
     texts = df_constructive["text_for_topic"].tolist()
@@ -292,26 +371,28 @@ def cluster_topics(
 
     df_constructive["topic_id"] = topics
 
-    # Generate topic labels
+    # Generate clean human-readable topic labels
     topic_info = topic_model.get_topic_info()
     topic_label_map = {}
     for _, row in topic_info.iterrows():
         tid = row["Topic"]
         if tid == -1:
-            topic_label_map[-1] = "Miscellaneous"
+            topic_label_map[-1] = "General Discussion"
             continue
         words = topic_model.get_topic(tid)
-        label = " · ".join([w[0].title() for w in words[:3]])
-        topic_label_map[tid] = label
+        raw_words = [w[0] for w in words] if words else [f"Topic {tid}"]
+        topic_label_map[tid] = format_topic_label(raw_words)
 
     df_constructive["topic_label"] = df_constructive["topic_id"].map(
-        lambda x: topic_label_map.get(x, "Other")
+        lambda x: topic_label_map.get(x, "General Discussion")
     )
 
     # Build topic summary
     topic_summary = {}
     for tid_raw in df_constructive["topic_id"].unique():
         tid = int(tid_raw)
+        if tid == -1 and len(df_constructive["topic_id"].unique()) > 1:
+            continue
         cluster = df_constructive[df_constructive["topic_id"] == tid_raw].copy()
         if "engagement_weight" in cluster.columns:
             cluster = cluster.sort_values("engagement_weight", ascending=False)
@@ -319,7 +400,7 @@ def cluster_topics(
             cluster = cluster.sort_values("like_count", ascending=False)
 
         words = topic_model.get_topic(tid_raw) if tid_raw != -1 else []
-        top_words = [w[0] for w in words[:top_n_words]]
+        top_words = [w[0] for w in words[:top_n_words]] if words else ["discussion"]
 
         rep_comments = (
             cluster.head(5)[["text", "like_count", "mood_label"]].to_dict("records")
@@ -328,7 +409,7 @@ def cluster_topics(
         )
 
         topic_summary[tid] = {
-            "label": topic_label_map.get(tid, "Other"),
+            "label": topic_label_map.get(tid, "General Discussion"),
             "size": int(len(cluster)),
             "top_words": top_words,
             "representative_comments": rep_comments,
@@ -338,23 +419,22 @@ def cluster_topics(
         }
 
     df_out = _merge_topics_back(df, df_constructive)
-    logger.info(f"Clustering complete. Topics found: {len(topic_summary)}")
+    logger.info(f"Clustering complete. Constructive topics found: {len(topic_summary)}")
     return df_out, topic_model, topic_summary
 
 
 def _merge_topics_back(df_full: pd.DataFrame, df_constructive: pd.DataFrame) -> pd.DataFrame:
-    """Helper to merge topic columns back into the master dataframe."""
+    """Helper to merge topic columns back into master dataframe while isolating quarantine."""
     df_out = df_full.copy()
     if "comment_id" not in df_out.columns:
         df_out["comment_id"] = [f"cid_{i}" for i in range(len(df_out))]
     if "comment_id" not in df_constructive.columns:
-        # Match using index if preserved
         df_constructive["comment_id"] = df_out.loc[df_constructive.index, "comment_id"].values if set(df_constructive.index).issubset(df_out.index) else [f"cid_{i}" for i in range(len(df_constructive))]
 
     topic_cols = df_constructive[["comment_id", "topic_id", "topic_label"]]
     if "topic_id" not in df_out.columns:
         df_out["topic_id"] = -1
-        df_out["topic_label"] = "Toxic (Quarantined)"
+        df_out["topic_label"] = "Quarantined (Excluded from Topics)"
     df_out = df_out.merge(topic_cols, on="comment_id", how="left", suffixes=("_old", ""))
     for col in ["topic_id", "topic_label"]:
         if f"{col}_old" in df_out.columns:
@@ -362,5 +442,7 @@ def _merge_topics_back(df_full: pd.DataFrame, df_constructive: pd.DataFrame) -> 
             df_out.drop(columns=[f"{col}_old"], inplace=True)
 
     df_out["topic_id"] = df_out["topic_id"].fillna(-1).astype(int)
-    df_out["topic_label"] = df_out["topic_label"].fillna("Toxic (Quarantined)")
+    df_out["topic_label"] = df_out["topic_label"].fillna("Quarantined (Excluded from Topics)")
+    if hasattr(df_full, "attrs"):
+        df_out.attrs = df_full.attrs.copy()
     return df_out

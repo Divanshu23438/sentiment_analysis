@@ -81,8 +81,8 @@ PROFANITY_PATTERNS = [
     (r"\bg\*\*nd\b", "gaand", "medium"),
     (r"\bg[a@]and\b", "gaand", "medium"),
     (r"\bm[a@]d[e3]rch[o0]d\b", "madarchod", "high"),
-    (r"\bbc\b", "bhenchod", "high"),
-    (r"\bmc\b", "madarchod", "high"),
+    (r"\bbc\b(?!\s*(?:rap|battle|bhai))\b", "bhenchod", "high"),
+    (r"\bmc\b(?!\s*(?:stan|stanny|square|insaan|kash|kode|altaf|head|battle|rap|hiphop|artist|bhai))\b", "madarchod", "high"),
     (r"\bl[o0]d[u]*\b", "lodu", "medium"),
     (r"\bhar[a@]mi\b", "harami", "medium"),
     (r"\bkamine\b", "kamine", "low"),
@@ -284,5 +284,7 @@ def preprocess_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     results = df["text"].apply(preprocess_comment)
     enriched = pd.DataFrame(list(results))
     out = pd.concat([df.reset_index(drop=True), enriched], axis=1)
+    if hasattr(df, "attrs"):
+        out.attrs = df.attrs.copy()
     logger.info("Preprocessing complete.")
     return out

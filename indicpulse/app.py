@@ -75,6 +75,8 @@ if "active_page" not in st.session_state:
     st.session_state.active_page = "Home"
 if "selected_platform" not in st.session_state:
     st.session_state.selected_platform = "YouTube"
+if "active_drilldown" not in st.session_state:
+    st.session_state.active_drilldown = "ALL"
 if "analysis_history" not in st.session_state:
     st.session_state.analysis_history = []
 if "selected_history_id" not in st.session_state:
@@ -379,6 +381,45 @@ st.markdown(f"""
         box-shadow: 0 2px 8px rgba(0,0,0,0.03);
     }}
 
+    /* 3D Mechanical Odometer / Rolling Digit Counter */
+    .odo-container {{
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: #18181B;
+        padding: 6px 10px;
+        border-radius: 14px;
+        box-shadow: inset 0 3px 6px rgba(0,0,0,0.6), 0 4px 12px rgba(24,24,27,0.18);
+        border: 1px solid #3F3F46;
+    }}
+    .odo-digit {{
+        background: linear-gradient(180deg, #27272A 0%, #3F3F46 48%, #18181B 52%, #27272A 100%);
+        color: #FFFFFF;
+        font-family: 'JetBrains Mono', 'Courier New', monospace;
+        font-size: 22px;
+        font-weight: 800;
+        min-width: 26px;
+        height: 36px;
+        border-radius: 7px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-top: 1px solid rgba(255,255,255,0.18);
+        border-bottom: 1px solid rgba(0,0,0,0.8);
+        box-shadow: inset 0 4px 8px rgba(0,0,0,0.45);
+        animation: odoRollIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+    }}
+    .odo-sep {{
+        color: #A1A1AA;
+        font-weight: 800;
+        font-size: 18px;
+        padding: 0 2px;
+    }}
+    @keyframes odoRollIn {{
+        0% {{ transform: translateY(-100%) rotateX(60deg); opacity: 0; }}
+        100% {{ transform: translateY(0) rotateX(0deg); opacity: 1; }}
+    }}
+
     /* Global Input & Button Overrides */
     .stTextInput > div > div > input {{
         border-radius: 12px !important;
@@ -411,7 +452,7 @@ def execute_analysis_flow(
     with st.status("Running IndicPulse 5-Stage Pipeline...", expanded=True) as status:
         # Stage 1: Ingestion
         if video_url and (df_input is None or df_input.empty):
-            st.write("1. Fetching comments from YouTube API...")
+            st.write("1. Fetching comments and video metadata from YouTube API...")
             prog_text = st.empty()
             def on_progress(fetched: int, target: int):
                 prog_text.caption(f"Fetched {fetched} / {target} comments...")
@@ -427,6 +468,10 @@ def execute_analysis_flow(
             st.error("No comments retrieved.")
             return
 
+        # Extract video metadata
+        v_title = df_input.attrs.get("video_title", target_title) if hasattr(df_input, "attrs") else target_title
+        c_title = df_input.attrs.get("channel_title", "") if hasattr(df_input, "attrs") else ""
+
         # Stage 2: Translating Emojis & Hinglish Slang
         st.write("2. Translating emojis to bracket tags & resolving Hinglish slang...")
         df_proc = preprocess_dataframe(df_input.copy())
@@ -440,11 +485,11 @@ def execute_analysis_flow(
         df_clust = run_topic_clustering(df_mood)
 
         # Stage 5: Synthesizing Creator Action Plan with Gemini 2.5 Flash
-        st.write("5. Synthesizing Executive Creator Action Plan with Gemini 2.5 Flash...")
+        st.write(f"5. Synthesizing Executive Creator Action Plan for '{v_title}' with Gemini 2.5 Flash...")
         try:
-            summary_text = generate_executive_summary(df_clust, gemini_key)
+            summary_text = generate_executive_summary(df_clust, gemini_key, video_title=v_title, channel_title=c_title)
             if not gemini_key:
-                summary_text += "\n\n> *Note: Heuristic synthesis generated. Configure GEMINI_API_KEY in .env for live Gemini 2.5 Flash LLM analysis.*"
+                summary_text += "\n\n> *Note: Grounded heuristic synthesis generated. Configure GEMINI_API_KEY in .env for live Gemini 2.5 Flash LLM analysis.*"
         except Exception as e:
             summary_text = f"Executive summary could not be synthesized: {e}"
 
@@ -461,12 +506,13 @@ def execute_analysis_flow(
     if "topic_name" in df_clust.columns:
         topic_counts = df_clust["topic_name"].value_counts().reset_index()
         topic_counts.columns = ["Topic", "Count"]
-        num_topics = len(topic_counts[topic_counts["Topic"] != "Toxic (Quarantined)"])
+        num_topics = len(topic_counts[~topic_counts["Topic"].str.contains("Quarantin")])
     else:
         topic_counts = pd.DataFrame({"Topic": ["General Feedback"], "Count": [total_c]})
         num_topics = 1
 
     dom_mood = df_mood["mood"].mode()[0] if not df_mood.empty else "Neutral"
+    pulse_score = round(min(10.0, max(3.5, (weighted_pos / 10.0))), 1)
 
     # Assemble run object
     run_id = f"run_{len(st.session_state.analysis_history) + 1}_{int(time.time())}"
@@ -474,7 +520,9 @@ def execute_analysis_flow(
         "id": run_id,
         "timestamp": datetime.now().strftime("%d %b %Y, %I:%M %p"),
         "platform": platform_name,
-        "url_or_title": target_title,
+        "url_or_title": v_title,
+        "video_title": v_title,
+        "channel_title": c_title,
         "df_mood": df_mood,
         "df_clustered": df_clust,
         "exec_summary": summary_text,
@@ -485,6 +533,7 @@ def execute_analysis_flow(
             "toxic_count": toxic_c,
             "num_topics": num_topics,
             "dominant_mood": dom_mood,
+            "pulse_score": pulse_score,
         },
     }
 
@@ -586,10 +635,37 @@ with st.sidebar:
 
 
 # ===============================================================
-# 3. HELPER: RENDER ASYMMETRIC BENTO GRID RESULT VIEW
+# 3. HELPER: 3D MECHANICAL ODOMETER SCORE COMPONENT & BENTO GRID
 # ===============================================================
+def render_odometer_score(value_str: str, label: str, subtitle: str = "", theme: str = "mint") -> str:
+    """Render a 3D Mechanical Odometer / Rolling Digit Counter inside a Bento Card theme."""
+    digits_html = []
+    for ch in str(value_str):
+        if ch in "0123456789":
+            digits_html.append(f'<span class="odo-digit">{ch}</span>')
+        elif ch in ".,%/+-: ":
+            digits_html.append(f'<span class="odo-sep">{ch}</span>')
+        else:
+            digits_html.append(f'<span class="odo-digit">{ch}</span>')
+    odo_bar = f'<div class="odo-container">{"".join(digits_html)}</div>'
+    sub_html = f'<div style="font-size:11px; font-weight:600; opacity:0.85; margin-top:8px;">{subtitle}</div>' if subtitle else ''
+
+    return f"""
+    <div class="bento-{theme}" style="min-height:140px; display:flex; flex-direction:column; justify-content:space-between; box-sizing:border-box;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">{label}</span>
+            <span class="arrow-circle">↗</span>
+        </div>
+        <div style="margin: 10px 0 4px 0;">
+            {odo_bar}
+        </div>
+        {sub_html}
+    </div>
+    """
+
+
 def render_bento_grid_results(run_data: Dict[str, Any]):
-    """Renders the complete Asymmetric Pastel Bento Grid for a run."""
+    """Renders the complete Asymmetric Pastel Bento Grid with Odometer UI & Interactive Drill-Downs."""
     df_mood = run_data["df_mood"]
     df_clustered = run_data["df_clustered"]
     exec_summary = run_data["exec_summary"]
@@ -601,12 +677,25 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
     toxic_c = metrics["toxic_count"]
     num_topics = metrics["num_topics"]
     dom_mood = metrics["dominant_mood"]
+    pulse_score = metrics.get("pulse_score", round(min(10.0, max(3.5, (weighted_pos / 10.0))), 1))
+    v_title = run_data.get("video_title", run_data.get("url_or_title", "Video Analysis"))
+    c_title = run_data.get("channel_title", "")
 
-    if "topic_name" in df_clustered.columns:
-        topic_counts = df_clustered["topic_name"].value_counts().reset_index()
-        topic_counts.columns = ["Topic", "Count"]
-    else:
-        topic_counts = pd.DataFrame({"Topic": ["General Feedback"], "Count": [total_c]})
+    # Ensure topic columns exist
+    if "topic_name" not in df_clustered.columns:
+        df_clustered["topic_name"] = df_clustered.get("topic_label", "General Discussion")
+
+    topic_counts = df_clustered["topic_name"].value_counts().reset_index()
+    topic_counts.columns = ["Topic", "Count"]
+    # Filter out quarantined from top topics display
+    topic_counts = topic_counts[~topic_counts["Topic"].str.contains("Quarantin")]
+
+    pos_mask = df_mood["mood"].astype(str).str.contains("Positive")
+    total_pos_count = int(pos_mask.sum())
+
+    # Metadata Banner
+    if c_title:
+        st.caption(f"🎬 **Video Context:** {v_title} • **Channel:** {c_title} • **Sample Size:** {total_c} comments")
 
     left_zone, right_zone = st.columns([2.15, 1.05], gap="large")
 
@@ -616,77 +705,48 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
         act_c1, act_c2 = st.columns(2, gap="medium")
 
         with act_c1:
-            st.markdown(f"""
-            <div class="bento-mint">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Audience Hype</span>
-                    <span class="pill-badge">{weighted_pos:.1f}% Approval</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:16px;">
-                    <div>
-                        <div style="font-size:11px; font-weight:600; opacity:0.8;">Dominant Sentiment</div>
-                        <div style="font-size:19px; font-weight:800;">{dom_mood}</div>
-                    </div>
-                    <span class="arrow-circle">↗</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_odometer_score(f"{weighted_pos:.1f}%", "Audience Hype", f"Dominant: {dom_mood}", theme="mint"), unsafe_allow_html=True)
+            if st.button(f"Inspect {total_pos_count} Hype Comments ↗", key=f"drill_pos_{run_data['id']}", use_container_width=True):
+                st.session_state.active_drilldown = "MOOD:Positive (Aggressive Hype)"
+                st.rerun()
 
         with act_c2:
-            st.markdown(f"""
-            <div class="bento-pink">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Moderation Shield</span>
-                    <span class="pill-badge">{toxic_c} Quarantined</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:16px;">
-                    <div>
-                        <div style="font-size:11px; font-weight:600; opacity:0.8;">Sarcasm Caught</div>
-                        <div style="font-size:19px; font-weight:800;">{sarcasm_c} Sarcastic Trolls</div>
-                    </div>
-                    <span class="arrow-circle">↗</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_odometer_score(f"{toxic_c}", "Moderation Shield", f"{sarcasm_c} Sarcastic | {toxic_c} Quarantined", theme="pink"), unsafe_allow_html=True)
+            m_col1, m_col2 = st.columns(2)
+            with m_col1:
+                if st.button(f"Inspect {sarcasm_c} Sarcastic ↗", key=f"drill_sarc_{run_data['id']}", use_container_width=True):
+                    st.session_state.active_drilldown = "MOOD:Sarcastic / Trolling"
+                    st.rerun()
+            with m_col2:
+                if st.button(f"Inspect {toxic_c} Toxic ↗", key=f"drill_tox_{run_data['id']}", use_container_width=True):
+                    st.session_state.active_drilldown = "MOOD:Toxic / Abusive"
+                    st.rerun()
 
         st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
         st.markdown("<div style='font-size:14px; font-weight:700; color:#64748B; margin-bottom:10px;'>Semantic Progress</div>", unsafe_allow_html=True)
 
         kpi_c1, kpi_c2, kpi_c3 = st.columns(3, gap="medium")
         with kpi_c1:
-            st.markdown(f"""
-            <div class="bento-mint" style="min-height:120px;">
-                <div style="font-size:12px; font-weight:600;">Analyzed</div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:10px;">
-                    <span style="font-size:30px; font-weight:800; line-height:1;">{total_c}</span>
-                    <span class="arrow-circle">↗</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_odometer_score(f"{total_c:,}", "Analyzed", "Total Dataset Comments", theme="mint"), unsafe_allow_html=True)
+            if st.button(f"Inspect All {total_c:,} ↗", key=f"drill_all_{run_data['id']}", use_container_width=True):
+                st.session_state.active_drilldown = "ALL"
+                st.rerun()
+
         with kpi_c2:
-            st.markdown(f"""
-            <div class="bento-yellow" style="min-height:120px;">
-                <div style="font-size:12px; font-weight:600;">Weighted Score</div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:10px;">
-                    <span style="font-size:30px; font-weight:800; line-height:1;">{weighted_pos:.0f}%</span>
-                    <span class="arrow-circle">↗</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_odometer_score(f"{weighted_pos:.0f}%", "Weighted Score", "Log10 Weighted Approval", theme="yellow"), unsafe_allow_html=True)
+            if st.button(f"Inspect Top Weighted ↗", key=f"drill_weight_{run_data['id']}", use_container_width=True):
+                st.session_state.active_drilldown = "HIGH_WEIGHT"
+                st.rerun()
+
         with kpi_c3:
-            st.markdown(f"""
-            <div class="bento-purple" style="min-height:120px;">
-                <div style="font-size:12px; font-weight:600;">Active Topics</div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:10px;">
-                    <span style="font-size:30px; font-weight:800; line-height:1;">{num_topics}</span>
-                    <span class="arrow-circle">↗</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_odometer_score(f"{num_topics}", "Active Topics", "Discovered Clusters", theme="purple"), unsafe_allow_html=True)
+            if st.button(f"Inspect All Topics ↗", key=f"drill_topics_{run_data['id']}", use_container_width=True):
+                st.session_state.active_drilldown = "ALL_TOPICS"
+                st.rerun()
 
         st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
-        # Executive Report Card (Clarified & Polished)
+        # Executive Report Card (Clarified & Video-Specific)
         render_html(f"""
         <div class="bento-yellow" style="min-height:auto; margin-bottom:12px;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -694,7 +754,7 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
                 <span class="arrow-circle">↗</span>
             </div>
             <div style="font-size:18px; font-weight:800; color:#713F12; margin-top:8px;">Executive Action Synthesis (What Viewers Want Next)</div>
-            <div style="font-size:12px; color:#713F12; opacity:0.85; margin-top:3px;">Synthesized automatically from the highest-liked comments across every discovered topic cluster.</div>
+            <div style="font-size:12px; color:#713F12; opacity:0.85; margin-top:3px;">Video-specific analysis synthesized from the highest-engaged Hinglish comments across discovered topics.</div>
             <div class="progress-track"><div class="progress-fill" style="width:{min(100, max(10, int(weighted_pos)))}%;"></div></div>
         </div>
         """)
@@ -706,7 +766,7 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
             if gem_key:
                 if st.button("Regenerate AI Summary", key=f"regen_{run_data['id']}", use_container_width=True):
                     with st.spinner("Re-synthesizing Gemini 2.5 Flash creator briefing..."):
-                        new_summary = generate_executive_summary(df_clustered, gem_key)
+                        new_summary = generate_executive_summary(df_clustered, gem_key, video_title=v_title, channel_title=c_title)
                         run_data["exec_summary"] = new_summary
                         st.success("Executive action synthesis refreshed.")
                         st.rerun()
@@ -715,6 +775,14 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
 
     # ── RIGHT ZONE ─────────────────────────────────────────────
     with right_zone:
+        st.markdown("<div style='font-size:14px; font-weight:700; color:#64748B; margin-bottom:10px;'>Community Sentiment Pulse</div>", unsafe_allow_html=True)
+
+        with st.container(border=True):
+            st.markdown("<div style='font-size:13px; font-weight:700; color:#1E293B;'>Radial Speedometer Gauge</div>", unsafe_allow_html=True)
+            fig_gauge = charts.pulse_gauge_chart(pulse_score, colorblind_safe=st.session_state.colorblind_mode)
+            st.plotly_chart(fig_gauge, use_container_width=True)
+
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
         st.markdown("<div style='font-size:14px; font-weight:700; color:#64748B; margin-bottom:10px;'>Mood Distribution</div>", unsafe_allow_html=True)
 
         with st.container(border=True):
@@ -747,14 +815,90 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
                 <span class="pill-badge">{row['Count']} items</span>
             </div>
             """, unsafe_allow_html=True)
+            if st.button(f"Inspect {row['Count']} Comments ↗", key=f"topic_drill_{idx}_{row['Topic']}_{run_data['id']}", use_container_width=True):
+                st.session_state.active_drilldown = f"TOPIC:{row['Topic']}"
+                st.rerun()
+
+    # ── SCORE EVIDENCE & COMMENT INSPECTOR DRAWER ─────────────
+    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+    active_drill = st.session_state.get("active_drilldown", "ALL")
+
+    # Filter comments and build mathematical explanation
+    target_data = df_clustered if "topic_name" in df_clustered.columns else df_mood
+
+    if active_drill == "ALL":
+        filter_label = f"All Comments ({total_c})"
+        math_expl = f"Displaying all {total_c} comments across all 4 sentiment categories and {num_topics} semantic clusters."
+        f_df = target_data
+    elif active_drill.startswith("MOOD:Positive"):
+        pos_m = target_data["mood"].astype(str).str.contains("Positive")
+        f_df = target_data[pos_m]
+        w_sum = f_df["engagement_weight"].sum() if "engagement_weight" in f_df.columns else 0
+        filter_label = f"Positive (Aggressive Hype) — {len(f_df)} comments"
+        math_expl = f"These {len(f_df)} comments triggered [fire_hype] / praise emoji tags or positive MuRIL logits with a combined log₁₀ engagement weight of {w_sum:.1f} ({weighted_pos:.1f}% of audience approval)."
+    elif active_drill.startswith("MOOD:Sarcastic"):
+        sarc_m = target_data["mood"].astype(str).str.contains("Sarcastic")
+        f_df = target_data[sarc_m]
+        filter_label = f"Sarcastic / Trolling — {len(f_df)} comments"
+        math_expl = f"These {len(f_df)} comments matched irony patterns, mocking syntax, or sarcasm tokens ([clown_mocking], [eye_roll_sarcasm])."
+    elif active_drill.startswith("MOOD:Toxic"):
+        tox_m = target_data["mood"].astype(str).str.contains("Toxic")
+        f_df = target_data[tox_m]
+        filter_label = f"Toxic & Abusive (Quarantined) — {len(f_df)} comments"
+        math_expl = f"These {len(f_df)} hostile comments matched abusive profanity regexes or severe harassment scores and were quarantined from semantic clustering."
+    elif active_drill == "HIGH_WEIGHT":
+        cutoff = target_data["engagement_weight"].quantile(0.75) if "engagement_weight" in target_data.columns else 0
+        f_df = target_data[target_data["engagement_weight"] >= cutoff] if "engagement_weight" in target_data.columns else target_data.head(25)
+        filter_label = f"Top-Engaged Comments (Top 25% Weight) — {len(f_df)} comments"
+        math_expl = f"These {len(f_df)} comments earned the highest likes, weighted via W = log₁₀(Likes + 1) + 1 to anchor the Gemini 2.5 Flash executive action report."
+    elif active_drill == "ALL_TOPICS":
+        f_df = target_data[~target_data["topic_name"].str.contains("Quarantin")] if "topic_name" in target_data.columns else target_data
+        filter_label = f"All Constructive Clustered Comments — {len(f_df)} comments"
+        math_expl = f"These {len(f_df)} constructive comments were vectorized with IndicSBERT and clustered into {num_topics} distinct themes via HDBSCAN."
+    elif active_drill.startswith("TOPIC:"):
+        target_t = active_drill.replace("TOPIC:", "").strip()
+        f_df = target_data[target_data["topic_name"] == target_t] if "topic_name" in target_data.columns else target_data
+        avg_w = f_df["engagement_weight"].mean() if "engagement_weight" in f_df.columns else 1.0
+        filter_label = f"Topic Cluster: {target_t} — {len(f_df)} comments"
+        math_expl = f"These {len(f_df)} comments were grouped together via IndicSBERT dense sentence embeddings + UMAP with an average engagement weight of {avg_w:.2f}."
+    else:
+        filter_label = f"Filtered View: {active_drill}"
+        math_expl = "Displaying comments matching the active drill-down filter."
+        f_df = target_data
+
+    # Sort filtered results by likes descending
+    sort_c = "likes" if "likes" in f_df.columns else ("like_count" if "like_count" in f_df.columns else None)
+    if sort_c:
+        f_df = f_df.sort_values(sort_c, ascending=False)
+
+    with st.container(border=True):
+        st.markdown(f"""
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <div>
+                <span style="font-size:16px; font-weight:800; color:#1E293B;">🔍 Score Evidence & Comment Inspector</span>
+                <span class="pill-badge" style="background:#18181B; color:#FFFFFF; margin-left:10px;">{filter_label}</span>
+            </div>
+        </div>
+        <div style="font-size:12px; color:#475569; background:#F8FAFC; border:1px solid #EAEEF4; border-radius:12px; padding:10px 14px; margin-bottom:14px; line-height:1.5;">
+            📐 <b>Evidence Logic:</b> {math_expl}
+        </div>
+        """, unsafe_allow_html=True)
+
+        if active_drill != "ALL":
+            if st.button("↺ Reset Filter (Show All Comments)", key=f"reset_filter_{run_data['id']}"):
+                st.session_state.active_drilldown = "ALL"
+                st.rerun()
+
+        cols_to_show = [c for c in ["raw_text", "likes", "engagement_weight", "mood", "topic_name", "text_for_muril"] if c in f_df.columns]
+        st.dataframe(f_df[cols_to_show], use_container_width=True, height=280)
 
     # ── BOTTOM DRAWER: COMMENT EXPLORER & QUARANTINE ───────────
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
     with st.container(border=True):
-        tab_exp, tab_quar = st.tabs(["Semantic Comment Explorer", f"Toxic Moderation Quarantine ({toxic_c})"])
+        tab_exp, tab_quar = st.tabs(["Full Semantic Comment Explorer", f"Toxic Moderation Quarantine ({toxic_c})"])
         with tab_exp:
-            display_cols = [c for c in ["raw_text", "likes", "mood", "text_for_muril", "engagement_weight"] if c in df_mood.columns]
-            st.dataframe(df_mood[display_cols], use_container_width=True, height=270)
+            display_cols = [c for c in ["raw_text", "likes", "mood", "topic_name", "text_for_muril", "engagement_weight"] if c in df_clustered.columns]
+            st.dataframe(df_clustered[display_cols], use_container_width=True, height=270)
         with tab_quar:
             toxic_df = df_mood[df_mood["mood"].astype(str).str.contains("Toxic")]
             st.warning(f"{len(toxic_df)} hostile comments isolated from BERTopic clustering.")

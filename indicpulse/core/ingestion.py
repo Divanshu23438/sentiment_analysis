@@ -83,10 +83,27 @@ def fetch_youtube_comments(
     video_id = _extract_video_id(video_url_or_id)
     youtube = build("youtube", "v3", developerKey=key)
 
+    # Fetch Real YouTube Video Metadata (Title, Channel, Description)
+    video_title = f"YouTube Video ({video_id})"
+    channel_title = "YouTube Channel"
+    video_description = ""
+    try:
+        vid_req = youtube.videos().list(part="snippet,statistics", id=video_id)
+        vid_resp = vid_req.execute()
+        v_items = vid_resp.get("items", [])
+        if v_items:
+            snip = v_items[0].get("snippet", {})
+            video_title = snip.get("title", video_title)
+            channel_title = snip.get("channelTitle", channel_title)
+            video_description = snip.get("description", "")[:300]
+            logger.info(f"Retrieved video metadata: '{video_title}' by {channel_title}")
+    except Exception as e:
+        logger.warning(f"Could not fetch video metadata for {video_id}: {e}")
+
     rows, next_page = [], None
     fetched = 0
 
-    logger.info(f"Fetching up to {max_comments} comments for video: {video_id}")
+    logger.info(f"Fetching up to {max_comments} comments for video: {video_id} ('{video_title}')")
 
     while fetched < max_comments:
         batch = min(100, max_comments - fetched)
@@ -145,8 +162,18 @@ def fetch_youtube_comments(
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df["like_count"] = pd.to_numeric(df["like_count"], errors="coerce").fillna(0).astype(int)
-    logger.info(f"Successfully fetched {len(df)} YouTube comments.")
-    return df[["comment_id", "author", "text", "timestamp", "like_count", "source"]]
+    
+    # Attach video metadata to dataframe attributes
+    df.attrs["video_title"] = video_title
+    df.attrs["channel_title"] = channel_title
+    df.attrs["video_description"] = video_description
+
+    logger.info(f"Successfully fetched {len(df)} YouTube comments for '{video_title}'.")
+    out = df[["comment_id", "author", "text", "timestamp", "like_count", "source"]]
+    out.attrs["video_title"] = video_title
+    out.attrs["channel_title"] = channel_title
+    out.attrs["video_description"] = video_description
+    return out
 
 
 # ──────────────────────────────────────────────
@@ -237,6 +264,9 @@ def load_csv_comments(
 
     # Drop empty text rows
     out = out[out["text"].str.strip().astype(bool)].reset_index(drop=True)
+    out.attrs["video_title"] = f"CSV Dataset: {path.name}"
+    out.attrs["channel_title"] = source_label
+    out.attrs["video_description"] = f"Imported from {path.name}"
     logger.info(f"Loaded {len(out)} comments from CSV: {path.name}")
     return out
 
@@ -296,4 +326,8 @@ def load_demo_comments() -> pd.DataFrame:
                 "source": "demo",
             }
         )
-    return pd.DataFrame(rows)
+    demo_df = pd.DataFrame(rows)
+    demo_df.attrs["video_title"] = "Demo Indian Social Media Dataset"
+    demo_df.attrs["channel_title"] = "IndicPulse Demo Studio"
+    demo_df.attrs["video_description"] = "Curated demo reviews containing Indian code-mixed Hinglish and slang."
+    return demo_df

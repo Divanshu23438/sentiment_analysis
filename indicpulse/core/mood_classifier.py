@@ -63,7 +63,9 @@ _SARCASTIC_SIGNALS = [
 
 _TOXIC_SIGNALS = [
     r"\b(chutiya|bhenchod|madarchod|gaand|gandu|lodu|harami|kamine|bastard|"
-    r"bakwaas|ghatiya|bekar|bekaar|faltu|ch\*tiya|bkl|g\*\*nd|mc|bc)\b",
+    r"bakwaas|ghatiya|bekar|bekaar|faltu|ch\*tiya|bkl|g\*\*nd)\b",
+    r"\bmc\b(?!\s*(?:stan|stanny|square|insaan|kash|kode|altaf|head|battle|rap|hiphop|artist|bhai))\b",
+    r"\bbc\b(?!\s*(?:rap|battle|bhai))\b",
     r"\[poop_bad\]|\[trash_bad\]|\[angry_frustrated\]",
     r"\b(hate|disgusting|pathetic|idiot|stupid|moron|loser|waste|rubbish)\b",
 ]
@@ -74,6 +76,33 @@ _NEGATIVE_SIGNALS = [
     r"kharab|bekar|fail|crash|bug)\b",
 ]
 
+POSITIVE_KEYWORDS = [
+    "love", "best", "bhai", "legend", "op", "mast", "season", "podcast",
+    "superb", "great", "awesome", "fire", "fan", "badiya", "favourite",
+    "favorite", "king", "goat", "respect", "w", "clean", "vibes"
+]
+
+POSITIVE_EMOJIS_AND_TAGS = [
+    "❤️", "🔥", "🙌", "💪", "😂", "😍", "✨", "👑", "👌", "💯",
+    "[love_praise]", "[fire_hype]", "[heart_love]", "[celebration_praise]",
+    "[ok_perfect]", "[thumbs_up]", "[love_amazed]", "[rocket_amazing]", "[hundred_perfect]"
+]
+
+
+def has_positive_sentiment_context(text: str) -> bool:
+    """
+    Check if a comment contains strong positive emojis or praise words.
+    Prevents false-positive toxic classifications on hyped audience comments.
+    """
+    t_lower = text.lower()
+    for tag in POSITIVE_EMOJIS_AND_TAGS:
+        if tag in t_lower or tag in text:
+            return True
+    for kw in POSITIVE_KEYWORDS:
+        if re.search(rf"\b{kw}\b", t_lower):
+            return True
+    return False
+
 
 def _rule_based_classify(text: str, profanity_flag: bool = False) -> Dict:
     """
@@ -81,11 +110,12 @@ def _rule_based_classify(text: str, profanity_flag: bool = False) -> Dict:
     Returns {'label': str, 'score': float, 'label_id': int}
     """
     text_lower = text.lower()
+    is_positive_context = has_positive_sentiment_context(text)
 
     toxic_score = sum(
         len(re.findall(p, text_lower, re.IGNORECASE)) for p in _TOXIC_SIGNALS
     )
-    if profanity_flag:
+    if profanity_flag and not is_positive_context:
         toxic_score += 2
 
     sarcasm_score = sum(
@@ -95,6 +125,9 @@ def _rule_based_classify(text: str, profanity_flag: bool = False) -> Dict:
     positive_score = sum(
         len(re.findall(p, text_lower, re.IGNORECASE)) for p in _POSITIVE_SIGNALS
     )
+    if is_positive_context:
+        positive_score += 3
+        toxic_score = 0  # Zero out toxic score if genuine positive hype/context exists
 
     negative_score = sum(
         len(re.findall(p, text_lower, re.IGNORECASE)) for p in _NEGATIVE_SIGNALS
@@ -108,6 +141,10 @@ def _rule_based_classify(text: str, profanity_flag: bool = False) -> Dict:
     }
 
     best_label = max(scores, key=scores.get)
+    # Never label as Toxic if positive context exists
+    if is_positive_context and best_label == "Toxic":
+        best_label = "Positive"
+
     best_score = scores[best_label]
     total = sum(scores.values()) or 1
     confidence = min(best_score / total, 0.95) if best_score > 0 else 0.5
@@ -236,7 +273,7 @@ class MuRILClassifier:
         results = []
         try:
             raw = self.pipeline(texts, batch_size=32)
-            for item, prof_flag in zip(raw, profanity_flags):
+            for text_item, item, prof_flag in zip(texts, raw, profanity_flags):
                 label_raw = item["label"]
                 # Map LABEL_X → named label
                 if label_raw.startswith("LABEL_"):
@@ -246,10 +283,17 @@ class MuRILClassifier:
                     label = label_raw
                     label_id = {v: k for k, v in LABEL_MAP.items()}.get(label, 2)
 
-                # Override: if profanity found + Neutral predicted, bump to Toxic
-                if prof_flag and label == "Neutral":
-                    label = "Toxic"
-                    label_id = 3
+                # Context-aware positive override: if comment contains positive emojis or praise,
+                # NEVER classify as Toxic even if slang/profanity was flagged!
+                if has_positive_sentiment_context(text_item):
+                    if label == "Toxic":
+                        label = "Positive"
+                        label_id = 0
+                else:
+                    # Override: if profanity found + Neutral predicted, bump to Toxic
+                    if prof_flag and label == "Neutral":
+                        label = "Toxic"
+                        label_id = 3
 
                 results.append(
                     {"label": label, "score": round(item["score"], 3), "label_id": label_id}
@@ -282,13 +326,15 @@ def classify_dataframe(
     logger.info(f"Classifying {len(texts)} comments...")
     results = classifier.classify_batch(texts, prof_flags)
 
-    df = df.copy()
-    df["mood_label"] = [r["label"] for r in results]
-    df["mood_score"] = [r["score"] for r in results]
-    df["is_toxic"] = df["mood_label"] == "Toxic"
-    logger.info(f"Classification done. Toxic: {df['is_toxic'].sum()}, "
-                f"Positive: {(df['mood_label']=='Positive').sum()}")
-    return df
+    df_out = df.copy()
+    df_out["mood_label"] = [r["label"] for r in results]
+    df_out["mood_score"] = [r["score"] for r in results]
+    df_out["is_toxic"] = df_out["mood_label"] == "Toxic"
+    if hasattr(df, "attrs"):
+        df_out.attrs = df.attrs.copy()
+    logger.info(f"Classification done. Toxic: {df_out['is_toxic'].sum()}, "
+                f"Positive: {(df_out['mood_label']=='Positive').sum()}")
+    return df_out
 
 
 # ──────────────────────────────────────────────
