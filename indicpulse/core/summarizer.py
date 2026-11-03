@@ -8,6 +8,8 @@ Synthesizes deep, contextual audience insights using Gemini 2.5 Flash:
   4. Top Viewer Requests & What They Want Next (Part 2, Guests, Follow-ups)
 
 ZERO generic templates. Strictly driven by real video title & comment text.
+Includes multi-model fallback (gemini-2.5-flash -> gemini-2.0-flash -> gemini-1.5-flash)
+and robust json parsing.
 """
 
 import os
@@ -22,7 +24,13 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-2.5-flash"
+# Candidate models in preferred order
+CANDIDATE_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
 
 SYSTEM_PROMPT = """You are IndicPulse AI, an elite multilingual social media intelligence agent specializing in 
 Indian digital content, YouTube video analysis, and Romanized code-mixed languages (Hinglish, Hindi-English slang). 
@@ -114,7 +122,7 @@ Return a raw JSON object strictly conforming to this schema:
   "viewer_consensus": {{
     "subject_summary": "1-2 sentences explaining what this video is about and how the audience reacted to the guest/host/content.",
     "overall_sentiment": "Strongly Positive | Mildly Positive | Mixed | Sarcastic / Humorous | Critical",
-    "pulse_score": <float between 1.0 and 10.0, e.g. 8.6>,
+    "pulse_score": 8.6,
     "cultural_nuance": "1 sentence on Indian/Hinglish internet culture, meme references, or dialect nuance observed in this comment section."
   }},
   "what_viewers_loved": {{
@@ -145,6 +153,40 @@ Return a raw JSON object strictly conforming to this schema:
 }}"""
 
 
+def _extract_json_from_response(raw_text: str) -> Optional[Dict]:
+    """Robust JSON extractor supporting code fences, preambles, and partial braces."""
+    if not raw_text:
+        return None
+    raw = raw_text.strip()
+
+    # Strip code block wrappers
+    if "```json" in raw:
+        match = re.search(r"```json\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if match:
+            raw = match.group(1).strip()
+    elif "```" in raw:
+        match = re.search(r"```\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if match:
+            raw = match.group(1).strip()
+
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+
+    # Find widest outer braces
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = raw[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    return None
+
+
 def generate_executive_summary(
     topic_summary: Dict,
     df: pd.DataFrame,
@@ -153,10 +195,10 @@ def generate_executive_summary(
     channel_title: str = "",
 ) -> Dict:
     """
-    Generate video-specific executive synthesis via Gemini 2.5 Flash.
-    Falls back gracefully to data-grounded heuristic synthesis if API key is absent.
+    Generate video-specific executive synthesis via Gemini 2.5 Flash (with multi-model fallback).
+    Falls back gracefully to data-grounded heuristic synthesis if API key is absent or invalid.
     """
-    key = api_key or os.getenv("GEMINI_API_KEY", "")
+    key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
 
     # Extract video title from dataframe attrs if not provided
     v_title = video_title or df.attrs.get("video_title", "Video Analysis")
@@ -164,7 +206,10 @@ def generate_executive_summary(
 
     if not key:
         logger.info("No Gemini API key supplied. Generating video-grounded fallback summary.")
-        return _fallback_summary(df, topic_summary, v_title, c_title)
+        fb = _fallback_summary(df, topic_summary, v_title, c_title)
+        fb["_source"] = "heuristic"
+        fb["_notice"] = "Grounded heuristic synthesis (Add GEMINI_API_KEY to activate live neural synthesis)."
+        return fb
 
     prompt = _build_analysis_prompt(
         topic_summary=topic_summary,
@@ -173,39 +218,51 @@ def generate_executive_summary(
         channel_title=c_title,
     )
 
-    try:
-        from google import genai
-        from google.genai import types
+    last_error = None
+    for model_name in CANDIDATE_MODELS:
+        try:
+            from google import genai
+            from google.genai import types
 
-        client = genai.Client(api_key=key)
+            client = genai.Client(api_key=key)
 
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.2,
-                max_output_tokens=2048,
-                response_mime_type="application/json",
-            ),
-        )
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.2,
+                    max_output_tokens=2048,
+                    response_mime_type="application/json",
+                ),
+            )
 
-        raw = response.text.strip()
-        if raw.startswith("```"):
-            lines = raw.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            raw = "\n".join(lines).strip()
+            raw = response.text or ""
+            parsed = _extract_json_from_response(raw)
 
-        result = json.loads(raw)
-        logger.info(f"Gemini 2.5 Flash summary generated for '{v_title}'.")
-        return result
+            if parsed and isinstance(parsed, dict) and "viewer_consensus" in parsed:
+                parsed["_source"] = "live_gemini"
+                parsed["_model_used"] = model_name
+                parsed["_gemini_success"] = True
+                logger.info(f"Gemini live synthesis successfully produced with model: {model_name}")
+                return parsed
+            elif parsed and isinstance(parsed, dict):
+                # Schema might be slightly non-standard, still live
+                parsed["_source"] = "live_gemini"
+                parsed["_model_used"] = model_name
+                parsed["_gemini_success"] = True
+                return parsed
 
-    except Exception as e:
-        logger.error(f"Gemini API generation error: {e}. Using video-grounded fallback.")
-        return _fallback_summary(df, topic_summary, v_title, c_title)
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Gemini model {model_name} invocation failed: {e}. Trying next fallback model...")
+
+    logger.error(f"All Gemini model invocations failed. Last error: {last_error}. Using video-grounded fallback.")
+    fb = _fallback_summary(df, topic_summary, v_title, c_title)
+    fb["_source"] = "fallback"
+    fb["_gemini_error"] = str(last_error)
+    fb["_notice"] = f"Gemini API Notice: {last_error} — Showing Grounded Heuristic Briefing."
+    return fb
 
 
 def _fallback_summary(

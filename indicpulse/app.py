@@ -77,6 +77,18 @@ if "selected_platform" not in st.session_state:
     st.session_state.selected_platform = "YouTube"
 if "active_drilldown" not in st.session_state:
     st.session_state.active_drilldown = "ALL"
+if "inspector_open" not in st.session_state:
+    st.session_state.inspector_open = False
+if "inspector_title" not in st.session_state:
+    st.session_state.inspector_title = "All Analyzed Comments"
+if "inspector_filter_type" not in st.session_state:
+    st.session_state.inspector_filter_type = "ALL"
+if "inspector_filter_val" not in st.session_state:
+    st.session_state.inspector_filter_val = None
+if "gemini_api_key" not in st.session_state:
+    st.session_state.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+if "youtube_api_key" not in st.session_state:
+    st.session_state.youtube_api_key = os.getenv("YOUTUBE_API_KEY", "")
 if "analysis_history" not in st.session_state:
     st.session_state.analysis_history = []
 if "selected_history_id" not in st.session_state:
@@ -105,6 +117,178 @@ if "toggle_quarantine" not in st.session_state:
     st.session_state.toggle_quarantine = True
 if "toggle_log_weight" not in st.session_state:
     st.session_state.toggle_log_weight = True
+
+
+def trigger_inspector(title: str, f_type: str, f_val: Any = None):
+    """Callback to open comment inspector modal and set filter parameters."""
+    st.session_state.inspector_open = True
+    st.session_state.inspector_title = title
+    st.session_state.inspector_filter_type = f_type
+    st.session_state.inspector_filter_val = f_val
+    st.session_state.active_drilldown = f_type if f_type != "TOPIC" else f"TOPIC:{f_val}"
+
+
+def close_inspector():
+    """Callback to close the inspector modal dialog."""
+    st.session_state.inspector_open = False
+
+
+def get_gemini_api_key() -> str:
+    """Retrieve Gemini API Key from session state, env vars, or Streamlit secrets."""
+    if st.session_state.get("gemini_api_key"):
+        return st.session_state.gemini_api_key.strip()
+    if os.getenv("GEMINI_API_KEY"):
+        return os.getenv("GEMINI_API_KEY").strip()
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def get_youtube_api_key() -> str:
+    """Retrieve YouTube Data API Key from session state, env vars, or Streamlit secrets."""
+    if st.session_state.get("youtube_api_key"):
+        return st.session_state.youtube_api_key.strip()
+    if os.getenv("YOUTUBE_API_KEY"):
+        return os.getenv("YOUTUBE_API_KEY").strip()
+    try:
+        if "YOUTUBE_API_KEY" in st.secrets:
+            return st.secrets["YOUTUBE_API_KEY"].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def filter_comments_for_inspector(df: pd.DataFrame, f_type: str, f_val: Any = None):
+    """
+    Filters DataFrame based on active inspection category and returns:
+    (filtered_df, math_explanation_str, filter_badge_label)
+    f_type options: "ALL", "MOOD", "TOPIC", "SARCASM", "TOXIC", "APPROVAL" / "HIGH_WEIGHT"
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(), "No comments available in dataset.", "Empty (0)"
+
+    target_df = df.copy()
+    mood_col = "mood" if "mood" in target_df.columns else ("mood_label" if "mood_label" in target_df.columns else None)
+    topic_col = "topic_name" if "topic_name" in target_df.columns else ("topic_label" if "topic_label" in target_df.columns else None)
+
+    if f_type == "ALL":
+        f_df = target_df
+        expl = f"Displaying all {len(f_df)} comments across all 4 sentiment categories and discovered semantic clusters."
+        badge = f"All Comments ({len(f_df)})"
+
+    elif f_type == "MOOD":
+        target_mood = str(f_val or "Positive").strip()
+        if mood_col:
+            m_mask = target_df[mood_col].astype(str).str.contains(target_mood, case=False, na=False)
+            f_df = target_df[m_mask]
+        else:
+            f_df = target_df
+        w_sum = f_df["engagement_weight"].sum() if "engagement_weight" in f_df.columns else 0
+        expl = f"These {len(f_df)} comments were classified as '{target_mood}' by Google MuRIL multilingual logits with an aggregate log₁₀ engagement weight of {w_sum:.1f}."
+        badge = f"Mood: {target_mood} ({len(f_df)})"
+
+    elif f_type == "SARCASM":
+        if mood_col:
+            m_mask = target_df[mood_col].astype(str).str.contains("Sarcastic|Troll", case=False, na=False)
+            f_df = target_df[m_mask]
+        else:
+            f_df = target_df
+        expl = f"These {len(f_df)} comments matched irony patterns, mock praise, or sarcasm emoji tokens ([clown_mocking], [eye_roll_sarcasm])."
+        badge = f"Sarcastic / Trolling ({len(f_df)})"
+
+    elif f_type == "TOXIC":
+        if "is_toxic" in target_df.columns:
+            m_mask = target_df["is_toxic"] == True
+        elif mood_col:
+            m_mask = target_df[mood_col].astype(str).str.contains("Toxic|Abus", case=False, na=False)
+        else:
+            m_mask = pd.Series([False] * len(target_df))
+        f_df = target_df[m_mask]
+        expl = f"These {len(f_df)} hostile comments matched abusive profanity regexes or severe harassment patterns and were quarantined from semantic clustering."
+        badge = f"Toxic Quarantined ({len(f_df)})"
+
+    elif f_type in ["APPROVAL", "HIGH_WEIGHT"]:
+        if "engagement_weight" in target_df.columns and len(target_df) > 0:
+            q75 = target_df["engagement_weight"].quantile(0.75)
+            f_df = target_df[target_df["engagement_weight"] >= q75]
+        else:
+            f_df = target_df.head(25)
+        expl = f"These {len(f_df)} comments represent the highest 25% of audience engagement, weighted via W = log₁₀(Likes + 1) + 1 to anchor creator briefings."
+        badge = f"Top-Weighted (Top 25%) ({len(f_df)})"
+
+    elif f_type == "TOPIC":
+        if f_val == "ALL_TOPICS" or not f_val:
+            if topic_col:
+                f_df = target_df[~target_df[topic_col].astype(str).str.contains("Quarantin", case=False, na=False)]
+            else:
+                f_df = target_df
+            expl = f"These {len(f_df)} constructive comments were vectorized with IndicSBERT and clustered into thematic topics via HDBSCAN."
+            badge = f"All Discovered Topics ({len(f_df)})"
+        else:
+            target_topic = str(f_val).strip()
+            if topic_col:
+                f_df = target_df[target_df[topic_col] == target_topic]
+            else:
+                f_df = target_df
+            avg_w = f_df["engagement_weight"].mean() if "engagement_weight" in f_df.columns else 1.0
+            expl = f"These {len(f_df)} comments were clustered into '{target_topic}' via IndicSBERT dense sentence embeddings with an average engagement weight of {avg_w:.2f}."
+            badge = f"Topic: {target_topic} ({len(f_df)})"
+
+    else:
+        f_df = target_df
+        expl = "Displaying comments matching the active inspection filter."
+        badge = f"Filtered ({len(f_df)})"
+
+    sort_c = "likes" if "likes" in f_df.columns else ("like_count" if "like_count" in f_df.columns else None)
+    if sort_c:
+        f_df = f_df.sort_values(sort_c, ascending=False)
+
+    return f_df, expl, badge
+
+
+@st.dialog("Score Evidence & Comment Inspector", width="large")
+def render_inspector_dialog(df_source: pd.DataFrame, title: str, f_type: str, f_val: Any = None):
+    """Full-featured modal dialog with mathematical explanation, counters, search, and CSV export."""
+    f_df, math_expl, badge = filter_comments_for_inspector(df_source, f_type, f_val)
+    st.markdown(f"""
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <span style="font-size:17px; font-weight:800; color:#18181B;">{title}</span>
+        <span class="pill-badge" style="background:#18181B; color:#FFFFFF;">{badge}</span>
+    </div>
+    <div style="font-size:12px; color:#475569; background:#F8FAFC; border:1px solid #EAEEF4; border-radius:12px; padding:10px 14px; margin-bottom:14px; line-height:1.5;">
+        📐 <b>Mathematical Evidence:</b> {math_expl}
+    </div>
+    """, unsafe_allow_html=True)
+
+    mc1, mc2, mc3 = st.columns(3)
+    with mc1:
+        st.metric("Total Comments", f"{len(f_df):,}")
+    with mc2:
+        tot_l = int(f_df['likes'].sum()) if 'likes' in f_df.columns else (int(f_df['like_count'].sum()) if 'like_count' in f_df.columns else 0)
+        st.metric("Aggregate Likes", f"{tot_l:,}")
+    with mc3:
+        avg_w = f_df['engagement_weight'].mean() if 'engagement_weight' in f_df.columns else 1.0
+        st.metric("Avg Engagement Weight", f"{avg_w:.2f}")
+
+    search_kw = st.text_input("🔍 Filter keywords...", placeholder="Type keywords to filter rows...", key=f"dlg_search_{f_type}_{f_val}")
+    if search_kw:
+        t_col = "raw_text" if "raw_text" in f_df.columns else "text"
+        f_df = f_df[f_df[t_col].astype(str).str.contains(search_kw, case=False, na=False)]
+
+    cols_show = [c for c in ["raw_text", "likes", "mood", "topic_name", "engagement_weight", "text_for_muril"] if c in f_df.columns]
+    st.dataframe(f_df[cols_show], use_container_width=True, height=320)
+
+    bc1, bc2 = st.columns([1, 1])
+    with bc1:
+        csv_data = f_df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Export Filtered Comments (CSV)", data=csv_data, file_name=f"indicpulse_inspect_{f_type}.csv", mime="text/csv", use_container_width=True)
+    with bc2:
+        if st.button("Close Inspector Modal", key="close_dlg_btn", use_container_width=True):
+            st.session_state.inspector_open = False
+            st.rerun()
 
 # ── INLINE PRODUCTION SVG EMBLEMS (COMPACT ZERO-INDENT) ─────────
 SVG_BRAND_LOGO = '<svg width="34" height="34" viewBox="0 0 34 34" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="34" height="34" rx="10" fill="#18181B"/><path d="M7 17H11L14 9L19 25L23 14L25 17H27" stroke="#34D399" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
@@ -445,8 +629,8 @@ def execute_analysis_flow(
     max_comments: int = 300,
 ):
     """Executes the full IndicPulse 5-Stage pipeline with live status updates and commits result to history."""
-    yt_key = os.getenv("YOUTUBE_API_KEY", "")
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    yt_key = get_youtube_api_key()
+    gemini_key = get_gemini_api_key()
     model_id = os.getenv("HF_MODEL_ID", "google/muril-base-cased")
 
     with st.status("Running IndicPulse 5-Stage Pipeline...", expanded=True) as status:
@@ -488,9 +672,8 @@ def execute_analysis_flow(
         st.write(f"5. Synthesizing Executive Creator Action Plan for '{v_title}' with Gemini 2.5 Flash...")
         try:
             summary_text = generate_executive_summary(df_clust, gemini_key, video_title=v_title, channel_title=c_title)
-            if not gemini_key:
-                summary_text += "\n\n> *Note: Grounded heuristic synthesis generated. Configure GEMINI_API_KEY in .env for live Gemini 2.5 Flash LLM analysis.*"
         except Exception as e:
+            logger.error(f"Gemini execution error: {e}")
             summary_text = f"Executive summary could not be synthesized: {e}"
 
         status.update(label=f"Analysis Complete! ({len(df_mood)} comments processed)", state="complete", expanded=False)
@@ -697,6 +880,16 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
     if c_title:
         st.caption(f"🎬 **Video Context:** {v_title} • **Channel:** {c_title} • **Sample Size:** {total_c} comments")
 
+    # Open Modal Dialog if triggered by any Inspect button
+    if st.session_state.get("inspector_open"):
+        target_modal_data = df_clustered if "topic_name" in df_clustered.columns else df_mood
+        render_inspector_dialog(
+            target_modal_data,
+            st.session_state.get("inspector_title", "Score Evidence & Comment Inspector"),
+            st.session_state.get("inspector_filter_type", "ALL"),
+            st.session_state.get("inspector_filter_val", None),
+        )
+
     left_zone, right_zone = st.columns([2.15, 1.05], gap="large")
 
     # ── LEFT ZONE ──────────────────────────────────────────────
@@ -706,21 +899,33 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
 
         with act_c1:
             st.markdown(render_odometer_score(f"{weighted_pos:.1f}%", "Audience Hype", f"Dominant: {dom_mood}", theme="mint"), unsafe_allow_html=True)
-            if st.button(f"Inspect {total_pos_count} Hype Comments ↗", key=f"drill_pos_{run_data['id']}", use_container_width=True):
-                st.session_state.active_drilldown = "MOOD:Positive (Aggressive Hype)"
-                st.rerun()
+            st.button(
+                f"Inspect {total_pos_count} Hype Comments ↗",
+                key=f"drill_pos_{run_data['id']}",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=(f"Audience Hype & Positive Comments ({total_pos_count})", "MOOD", "Positive"),
+            )
 
         with act_c2:
             st.markdown(render_odometer_score(f"{toxic_c}", "Moderation Shield", f"{sarcasm_c} Sarcastic | {toxic_c} Quarantined", theme="pink"), unsafe_allow_html=True)
             m_col1, m_col2 = st.columns(2)
             with m_col1:
-                if st.button(f"Inspect {sarcasm_c} Sarcastic ↗", key=f"drill_sarc_{run_data['id']}", use_container_width=True):
-                    st.session_state.active_drilldown = "MOOD:Sarcastic / Trolling"
-                    st.rerun()
+                st.button(
+                    f"Inspect {sarcasm_c} Sarcastic ↗",
+                    key=f"drill_sarc_{run_data['id']}",
+                    use_container_width=True,
+                    on_click=trigger_inspector,
+                    args=(f"Sarcastic & Trolling Comments ({sarcasm_c})", "SARCASM", None),
+                )
             with m_col2:
-                if st.button(f"Inspect {toxic_c} Toxic ↗", key=f"drill_tox_{run_data['id']}", use_container_width=True):
-                    st.session_state.active_drilldown = "MOOD:Toxic / Abusive"
-                    st.rerun()
+                st.button(
+                    f"Inspect {toxic_c} Toxic ↗",
+                    key=f"drill_tox_{run_data['id']}",
+                    use_container_width=True,
+                    on_click=trigger_inspector,
+                    args=(f"Toxic & Abusive Quarantined ({toxic_c})", "TOXIC", None),
+                )
 
         st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
         st.markdown("<div style='font-size:14px; font-weight:700; color:#64748B; margin-bottom:10px;'>Semantic Progress</div>", unsafe_allow_html=True)
@@ -728,21 +933,33 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
         kpi_c1, kpi_c2, kpi_c3 = st.columns(3, gap="medium")
         with kpi_c1:
             st.markdown(render_odometer_score(f"{total_c:,}", "Analyzed", "Total Dataset Comments", theme="mint"), unsafe_allow_html=True)
-            if st.button(f"Inspect All {total_c:,} ↗", key=f"drill_all_{run_data['id']}", use_container_width=True):
-                st.session_state.active_drilldown = "ALL"
-                st.rerun()
+            st.button(
+                f"Inspect All {total_c:,} ↗",
+                key=f"drill_all_{run_data['id']}",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=(f"All Analyzed Comments ({total_c:,})", "ALL", None),
+            )
 
         with kpi_c2:
             st.markdown(render_odometer_score(f"{weighted_pos:.0f}%", "Weighted Score", "Log10 Weighted Approval", theme="yellow"), unsafe_allow_html=True)
-            if st.button(f"Inspect Top Weighted ↗", key=f"drill_weight_{run_data['id']}", use_container_width=True):
-                st.session_state.active_drilldown = "HIGH_WEIGHT"
-                st.rerun()
+            st.button(
+                f"Inspect Top Weighted ↗",
+                key=f"drill_weight_{run_data['id']}",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=("Top Engagement-Weighted Comments (Top 25%)", "APPROVAL", None),
+            )
 
         with kpi_c3:
             st.markdown(render_odometer_score(f"{num_topics}", "Active Topics", "Discovered Clusters", theme="purple"), unsafe_allow_html=True)
-            if st.button(f"Inspect All Topics ↗", key=f"drill_topics_{run_data['id']}", use_container_width=True):
-                st.session_state.active_drilldown = "ALL_TOPICS"
-                st.rerun()
+            st.button(
+                f"Inspect All Topics ↗",
+                key=f"drill_topics_{run_data['id']}",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=(f"All Discovered Topics ({num_topics})", "TOPIC", "ALL_TOPICS"),
+            )
 
         st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
@@ -760,18 +977,37 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
         """)
 
         with st.container(border=True):
-            st.markdown(exec_summary)
+            st.markdown(exec_summary, unsafe_allow_html=True)
 
-            gem_key = os.getenv("GEMINI_API_KEY", "")
-            if gem_key:
-                if st.button("Regenerate AI Summary", key=f"regen_{run_data['id']}", use_container_width=True):
-                    with st.spinner("Re-synthesizing Gemini 2.5 Flash creator briefing..."):
-                        new_summary = generate_executive_summary(df_clustered, gem_key, video_title=v_title, channel_title=c_title)
-                        run_data["exec_summary"] = new_summary
-                        st.success("Executive action synthesis refreshed.")
-                        st.rerun()
-            else:
-                st.caption("💡 Add GEMINI_API_KEY to your .env file or session settings to enable live Gemini 2.5 Flash LLM re-synthesis.")
+            active_gem_key = get_gemini_api_key()
+            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+            with st.expander("⚡ Google Gemini 2.5 Flash Neural Engine Controls", expanded=not bool(active_gem_key)):
+                g_col1, g_col2 = st.columns([3, 1.3])
+                with g_col1:
+                    gem_input = st.text_input(
+                        "Google Gemini API Key",
+                        value=active_gem_key,
+                        type="password",
+                        key=f"gem_inline_in_{run_data['id']}",
+                        placeholder="Paste AI Studio API Key (AIzaSy...)",
+                        help="Enter your Google Gemini API key to activate live 2.5 Flash neural synthesis."
+                    )
+                with g_col2:
+                    st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                    run_gemini_now = st.button("⚡ Synthesize with Gemini", key=f"run_gem_btn_{run_data['id']}", type="primary", use_container_width=True)
+
+                if run_gemini_now:
+                    target_key = gem_input.strip() or active_gem_key
+                    if not target_key:
+                        st.error("Please enter a valid Google Gemini API key.")
+                    else:
+                        st.session_state.gemini_api_key = target_key
+                        os.environ["GEMINI_API_KEY"] = target_key
+                        with st.spinner("Synthesizing live Gemini 2.5 Flash creator briefing..."):
+                            new_summary = generate_executive_summary(df_clustered, target_key, video_title=v_title, channel_title=c_title)
+                            run_data["exec_summary"] = new_summary
+                            st.success("Executive action synthesis refreshed via Google Gemini 2.5 Flash!")
+                            st.rerun()
 
     # ── RIGHT ZONE ─────────────────────────────────────────────
     with right_zone:
@@ -815,68 +1051,28 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
                 <span class="pill-badge">{row['Count']} items</span>
             </div>
             """, unsafe_allow_html=True)
-            if st.button(f"Inspect {row['Count']} Comments ↗", key=f"topic_drill_{idx}_{row['Topic']}_{run_data['id']}", use_container_width=True):
-                st.session_state.active_drilldown = f"TOPIC:{row['Topic']}"
-                st.rerun()
+            st.button(
+                f"Inspect {row['Count']} Comments ↗",
+                key=f"topic_drill_{idx}_{row['Topic']}_{run_data['id']}",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=(f"Topic Cluster: {row['Topic']}", "TOPIC", row['Topic']),
+            )
 
     # ── SCORE EVIDENCE & COMMENT INSPECTOR DRAWER ─────────────
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
-    active_drill = st.session_state.get("active_drilldown", "ALL")
-
-    # Filter comments and build mathematical explanation
+    f_type = st.session_state.get("inspector_filter_type", "ALL")
+    f_val = st.session_state.get("inspector_filter_val", None)
     target_data = df_clustered if "topic_name" in df_clustered.columns else df_mood
 
-    if active_drill == "ALL":
-        filter_label = f"All Comments ({total_c})"
-        math_expl = f"Displaying all {total_c} comments across all 4 sentiment categories and {num_topics} semantic clusters."
-        f_df = target_data
-    elif active_drill.startswith("MOOD:Positive"):
-        pos_m = target_data["mood"].astype(str).str.contains("Positive")
-        f_df = target_data[pos_m]
-        w_sum = f_df["engagement_weight"].sum() if "engagement_weight" in f_df.columns else 0
-        filter_label = f"Positive (Aggressive Hype) — {len(f_df)} comments"
-        math_expl = f"These {len(f_df)} comments triggered [fire_hype] / praise emoji tags or positive MuRIL logits with a combined log₁₀ engagement weight of {w_sum:.1f} ({weighted_pos:.1f}% of audience approval)."
-    elif active_drill.startswith("MOOD:Sarcastic"):
-        sarc_m = target_data["mood"].astype(str).str.contains("Sarcastic")
-        f_df = target_data[sarc_m]
-        filter_label = f"Sarcastic / Trolling — {len(f_df)} comments"
-        math_expl = f"These {len(f_df)} comments matched irony patterns, mocking syntax, or sarcasm tokens ([clown_mocking], [eye_roll_sarcasm])."
-    elif active_drill.startswith("MOOD:Toxic"):
-        tox_m = target_data["mood"].astype(str).str.contains("Toxic")
-        f_df = target_data[tox_m]
-        filter_label = f"Toxic & Abusive (Quarantined) — {len(f_df)} comments"
-        math_expl = f"These {len(f_df)} hostile comments matched abusive profanity regexes or severe harassment scores and were quarantined from semantic clustering."
-    elif active_drill == "HIGH_WEIGHT":
-        cutoff = target_data["engagement_weight"].quantile(0.75) if "engagement_weight" in target_data.columns else 0
-        f_df = target_data[target_data["engagement_weight"] >= cutoff] if "engagement_weight" in target_data.columns else target_data.head(25)
-        filter_label = f"Top-Engaged Comments (Top 25% Weight) — {len(f_df)} comments"
-        math_expl = f"These {len(f_df)} comments earned the highest likes, weighted via W = log₁₀(Likes + 1) + 1 to anchor the Gemini 2.5 Flash executive action report."
-    elif active_drill == "ALL_TOPICS":
-        f_df = target_data[~target_data["topic_name"].str.contains("Quarantin")] if "topic_name" in target_data.columns else target_data
-        filter_label = f"All Constructive Clustered Comments — {len(f_df)} comments"
-        math_expl = f"These {len(f_df)} constructive comments were vectorized with IndicSBERT and clustered into {num_topics} distinct themes via HDBSCAN."
-    elif active_drill.startswith("TOPIC:"):
-        target_t = active_drill.replace("TOPIC:", "").strip()
-        f_df = target_data[target_data["topic_name"] == target_t] if "topic_name" in target_data.columns else target_data
-        avg_w = f_df["engagement_weight"].mean() if "engagement_weight" in f_df.columns else 1.0
-        filter_label = f"Topic Cluster: {target_t} — {len(f_df)} comments"
-        math_expl = f"These {len(f_df)} comments were grouped together via IndicSBERT dense sentence embeddings + UMAP with an average engagement weight of {avg_w:.2f}."
-    else:
-        filter_label = f"Filtered View: {active_drill}"
-        math_expl = "Displaying comments matching the active drill-down filter."
-        f_df = target_data
-
-    # Sort filtered results by likes descending
-    sort_c = "likes" if "likes" in f_df.columns else ("like_count" if "like_count" in f_df.columns else None)
-    if sort_c:
-        f_df = f_df.sort_values(sort_c, ascending=False)
+    f_df, math_expl, badge = filter_comments_for_inspector(target_data, f_type, f_val)
 
     with st.container(border=True):
         st.markdown(f"""
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
             <div>
                 <span style="font-size:16px; font-weight:800; color:#1E293B;">🔍 Score Evidence & Comment Inspector</span>
-                <span class="pill-badge" style="background:#18181B; color:#FFFFFF; margin-left:10px;">{filter_label}</span>
+                <span class="pill-badge" style="background:#18181B; color:#FFFFFF; margin-left:10px;">{badge}</span>
             </div>
         </div>
         <div style="font-size:12px; color:#475569; background:#F8FAFC; border:1px solid #EAEEF4; border-radius:12px; padding:10px 14px; margin-bottom:14px; line-height:1.5;">
@@ -884,10 +1080,9 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
         </div>
         """, unsafe_allow_html=True)
 
-        if active_drill != "ALL":
-            if st.button("↺ Reset Filter (Show All Comments)", key=f"reset_filter_{run_data['id']}"):
-                st.session_state.active_drilldown = "ALL"
-                st.rerun()
+        if f_type != "ALL":
+            if st.button("↺ Reset Filter (Show All Comments)", key=f"reset_filter_{run_data['id']}", on_click=trigger_inspector, args=("All Ingested Comments", "ALL", None)):
+                pass
 
         cols_to_show = [c for c in ["raw_text", "likes", "engagement_weight", "mood", "topic_name", "text_for_muril"] if c in f_df.columns]
         st.dataframe(f_df[cols_to_show], use_container_width=True, height=280)
@@ -1131,6 +1326,15 @@ elif st.session_state.active_page == "Dashboard":
         cum_sarcasm = int(all_moods["mood"].astype(str).str.contains("Sarcastic").sum())
         cum_toxic = int(all_moods["mood"].astype(str).str.contains("Toxic").sum())
 
+        # Open Modal Dialog if triggered on Dashboard
+        if st.session_state.get("inspector_open"):
+            render_inspector_dialog(
+                all_topics,
+                st.session_state.get("inspector_title", "Score Evidence & Comment Inspector"),
+                st.session_state.get("inspector_filter_type", "ALL"),
+                st.session_state.get("inspector_filter_val", None),
+            )
+
         # Row 1: 4 Cumulative Pastel Bento KPIs
         k1, k2, k3, k4 = st.columns(4)
         with k1:
@@ -1143,6 +1347,13 @@ elif st.session_state.active_page == "Dashboard":
                 </div>
             </div>
             """, unsafe_allow_html=True)
+            st.button(
+                f"Inspect All {cum_comments:,} ↗",
+                key="dash_inspect_all",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=(f"All Aggregated Comments ({cum_comments:,})", "ALL", None),
+            )
         with k2:
             st.markdown(f"""
             <div class="bento-yellow">
@@ -1153,6 +1364,13 @@ elif st.session_state.active_page == "Dashboard":
                 </div>
             </div>
             """, unsafe_allow_html=True)
+            st.button(
+                "Inspect Hype Comments ↗",
+                key="dash_inspect_pos",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=("Aggregated Positive Hype Comments", "MOOD", "Positive"),
+            )
         with k3:
             st.markdown(f"""
             <div class="bento-purple">
@@ -1163,6 +1381,13 @@ elif st.session_state.active_page == "Dashboard":
                 </div>
             </div>
             """, unsafe_allow_html=True)
+            st.button(
+                f"Inspect {cum_sarcasm} Sarcasm ↗",
+                key="dash_inspect_sarc",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=(f"Aggregated Sarcastic Comments ({cum_sarcasm})", "SARCASM", None),
+            )
         with k4:
             st.markdown(f"""
             <div class="bento-pink">
@@ -1173,6 +1398,13 @@ elif st.session_state.active_page == "Dashboard":
                 </div>
             </div>
             """, unsafe_allow_html=True)
+            st.button(
+                f"Inspect {cum_toxic} Toxic ↗",
+                key="dash_inspect_tox",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=(f"Aggregated Quarantined Toxic ({cum_toxic})", "TOXIC", None),
+            )
 
         st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
@@ -1483,8 +1715,10 @@ elif st.session_state.active_page == "Settings":
     """, unsafe_allow_html=True)
 
     # Card 1: .env Environment Connection Status (Read-Only Diagnostic)
-    yt_connected = bool(os.getenv("YOUTUBE_API_KEY"))
-    gemini_connected = bool(os.getenv("GEMINI_API_KEY"))
+    curr_yt_key = get_youtube_api_key()
+    curr_gem_key = get_gemini_api_key()
+    yt_connected = bool(curr_yt_key)
+    gemini_connected = bool(curr_gem_key)
     hf_model = os.getenv("HF_MODEL_ID", "google/muril-base-cased")
 
     with st.container(border=True):
@@ -1521,16 +1755,18 @@ elif st.session_state.active_page == "Settings":
             </div>
             """, unsafe_allow_html=True)
 
-        with st.expander("Configure / Override Environment Keys in Memory"):
-            st.caption("Temporarily inject keys for the active session without modifying the on-disk .env file:")
-            temp_yt = st.text_input("Temporary YouTube API Key", type="password", value=os.getenv("YOUTUBE_API_KEY", ""))
-            temp_gem = st.text_input("Temporary Gemini API Key", type="password", value=os.getenv("GEMINI_API_KEY", ""))
-            if st.button("Apply Keys to Memory"):
+        with st.expander("Configure / Override Environment Keys in Memory", expanded=not (yt_connected and gemini_connected)):
+            st.caption("Inject keys for the active session without modifying the on-disk .env file:")
+            temp_yt = st.text_input("YouTube Data API v3 Key", type="password", value=curr_yt_key)
+            temp_gem = st.text_input("Google Gemini API Key", type="password", value=curr_gem_key)
+            if st.button("Apply Keys to Memory", type="primary"):
                 if temp_yt:
-                    os.environ["YOUTUBE_API_KEY"] = temp_yt
+                    st.session_state.youtube_api_key = temp_yt.strip()
+                    os.environ["YOUTUBE_API_KEY"] = temp_yt.strip()
                 if temp_gem:
-                    os.environ["GEMINI_API_KEY"] = temp_gem
-                st.success("Session environment updated.")
+                    st.session_state.gemini_api_key = temp_gem.strip()
+                    os.environ["GEMINI_API_KEY"] = temp_gem.strip()
+                st.success("Session environment and API keys updated.")
                 st.rerun()
 
     st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)

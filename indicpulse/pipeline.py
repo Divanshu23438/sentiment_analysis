@@ -158,7 +158,25 @@ def generate_executive_summary(
     debate_quotes = "\n".join([f"> 💬 *{q}*" for q in cd.get("quotes", [])])
     action_items = "\n".join([f"**{i+1}.** {act}" for i, act in enumerate(vr.get("actionable_steps", []))])
 
-    md_output = f"""### 🎯 What Viewers Actually Think About This Video
+    # Status badge
+    if raw_summary.get("_gemini_success"):
+        model_used = raw_summary.get("_model_used", "gemini-2.5-flash")
+        status_banner = f"""<div style="background:#E2F6EE; border:1px solid #CCEFE2; color:#0F5132; padding:8px 12px; border-radius:10px; font-size:12px; font-weight:700; margin-bottom:14px; display:flex; align-items:center; gap:8px;">
+    <span>🟢</span> Live Gemini AI Active &bull; Engine: <code>{model_used}</code>
+</div>"""
+    elif raw_summary.get("_gemini_error"):
+        err_msg = str(raw_summary.get("_gemini_error"))[:150]
+        status_banner = f"""<div style="background:#FEF3D6; border:1px solid #FCE4AD; color:#713F12; padding:8px 12px; border-radius:10px; font-size:12px; margin-bottom:14px;">
+    <b>⚠️ Notice:</b> Live Gemini call encountered an issue (<code>{err_msg}</code>). Displaying video-grounded heuristic synthesis derived from real comment likes.
+</div>"""
+    else:
+        status_banner = """<div style="background:#EDE9FE; border:1px solid #DDD6FE; color:#4C1D95; padding:8px 12px; border-radius:10px; font-size:12px; margin-bottom:14px;">
+    <b>💡 Grounded Heuristic Briefing:</b> Derived from top-liked comments across discovered topics. Enter your Gemini API key below to activate live neural synthesis.
+</div>"""
+
+    md_output = f"""{status_banner}
+
+### 🎯 What Viewers Actually Think About This Video
 > **Audience Verdict:** **{vc.get('overall_sentiment', 'Engaged & Positive')}** • **Pulse Score:** `{vc.get('pulse_score', 8.5)}/10`  
 > **Summary:** {vc.get('subject_summary', f'Strong viewer engagement around discussions in {v_title}.')}  
 > **Cultural Nuance:** {vc.get('cultural_nuance', 'Hinglish slang and regional expressions detected across top reactions.')}
