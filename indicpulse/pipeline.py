@@ -12,6 +12,7 @@ Exposes standard pipeline functions with unified column aliases:
 
 import sys
 import os
+import re
 import logging
 
 _pipeline_dir = os.path.dirname(os.path.abspath(__file__))
@@ -132,13 +133,24 @@ def generate_executive_summary(
     topic_summary = {}
     for tid in df_clustered["topic_id"].unique():
         cluster = df_clustered[df_clustered["topic_id"] == tid]
+        if cluster.empty:
+            continue
+        if "engagement_weight" in cluster.columns:
+            cluster_sorted = cluster.sort_values("engagement_weight", ascending=False)
+        elif "likes" in cluster.columns:
+            cluster_sorted = cluster.sort_values("likes", ascending=False)
+        elif "like_count" in cluster.columns:
+            cluster_sorted = cluster.sort_values("like_count", ascending=False)
+        else:
+            cluster_sorted = cluster
+
         lbl = cluster["topic_label"].iloc[0] if "topic_label" in cluster.columns else "Cluster"
         topic_summary[int(tid)] = {
             "label": lbl,
             "size": len(cluster),
             "top_words": cluster["text_for_topic"].str.split().explode().value_counts().head(6).index.tolist() if "text_for_topic" in cluster.columns else [],
-            "representative_comments": cluster.head(4)[["text", "like_count", "mood_label"]].to_dict("records") if "mood_label" in cluster.columns else [],
-            "avg_engagement": cluster["engagement_weight"].mean() if "engagement_weight" in cluster.columns else 1.0,
+            "representative_comments": cluster_sorted.head(4)[["text", "like_count", "mood_label"]].to_dict("records") if "mood_label" in cluster_sorted.columns else cluster_sorted.head(4)[["text", "like_count"]].to_dict("records"),
+            "avg_engagement": float(cluster["engagement_weight"].mean()) if "engagement_weight" in cluster.columns else 1.0,
         }
 
     raw_summary = _gen_exec_summary(
@@ -154,62 +166,117 @@ def generate_executive_summary(
     cd = raw_summary.get("criticisms_and_debates", {})
     vr = raw_summary.get("viewer_requests_and_next_steps", {})
 
-    loved_quotes = "\n".join([f"> 💬 *{q}*" for q in wvl.get("quotes", [])])
-    debate_quotes = "\n".join([f"> 💬 *{q}*" for q in cd.get("quotes", [])])
-    action_items = "\n".join([f"**{i+1}.** {act}" for i, act in enumerate(vr.get("actionable_steps", []))])
+    # Helper to parse quote and likes cleanly
+    def format_quote_card(q_str: str, badge_bg: str = "#FEF3D6", badge_color: str = "#92400E", badge_icon: str = "🔥") -> str:
+        q_clean = str(q_str).strip()
+        # Extract likes if present
+        m = re.search(r'\((\d[\d,]*)\s*likes?\)', q_clean, re.IGNORECASE)
+        likes_str = m.group(1) if m else ""
+        text_clean = re.sub(r'\s*\(\d[\d,]*\s*likes?\)', '', q_clean).strip(' "“’')
+        
+        like_badge = f'<span style="background:{badge_bg}; color:{badge_color}; font-size:11px; font-weight:700; padding:4px 9px; border-radius:20px; white-space:nowrap; display:inline-flex; align-items:center; gap:4px;">{badge_icon} {likes_str} likes</span>' if likes_str else ''
+        
+        return f"""<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:10px; padding:11px 15px; margin-top:8px; box-shadow:0 1px 3px rgba(0,0,0,0.03); display:flex; justify-content:space-between; align-items:center; gap:12px;">
+    <div style="font-size:13px; color:#1E293B; font-style:italic; line-height:1.5;">&ldquo;{text_clean}&rdquo;</div>
+    {like_badge}
+</div>"""
 
-    # Status badge
+    loved_cards = "\n".join([format_quote_card(q, badge_bg="#FEF3D6", badge_color="#92400E", badge_icon="🔥") for q in wvl.get("quotes", [])])
+    debate_cards = "\n".join([format_quote_card(q, badge_bg="#F1F5F9", badge_color="#475569", badge_icon="💬") for q in cd.get("quotes", [])])
+
+    # Format actionable steps cards
+    action_cards = []
+    for i, act in enumerate(vr.get("actionable_steps", [])):
+        action_cards.append(f"""<div style="background:#FFFFFF; border:1px solid #FDE68A; border-radius:10px; padding:11px 15px; margin-top:8px; display:flex; align-items:flex-start; gap:10px; box-shadow:0 1px 2px rgba(0,0,0,0.02);">
+    <span style="background:#18181B; color:#FFFFFF; font-size:11px; font-weight:800; border-radius:50%; width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; margin-top:1px;">{i+1}</span>
+    <span style="font-size:13px; color:#1E293B; line-height:1.5;">{act}</span>
+</div>""")
+    action_items_html = "\n".join(action_cards)
+
+    # Status banner
     if raw_summary.get("_gemini_success"):
-        model_used = raw_summary.get("_model_used", "gemini-2.5-flash")
-        status_banner = f"""<div style="background:#E2F6EE; border:1px solid #CCEFE2; color:#0F5132; padding:8px 12px; border-radius:10px; font-size:12px; font-weight:700; margin-bottom:14px; display:flex; align-items:center; gap:8px;">
-    <span>🟢</span> Live Gemini AI Active &bull; Engine: <code>{model_used}</code>
+        model_used = raw_summary.get("_model_used", "gemini-2.0-flash")
+        status_banner = f"""<div style="background:#E2F6EE; border:1px solid #CCEFE2; color:#0F5132; padding:8px 14px; border-radius:10px; font-size:12px; font-weight:700; margin-bottom:14px; display:flex; align-items:center; gap:8px;">
+    <span>🟢</span> Live Google Gemini Active &bull; Engine: <code>{model_used}</code> &bull; Real Video-Grounded Synthesis
 </div>"""
     elif raw_summary.get("_gemini_error"):
         raw_err = str(raw_summary.get("_gemini_error"))
-        if "404" in raw_err:
-            status_banner = """<div style="background:#FFFBEB; border:1px solid #FCD34D; border-radius:12px; padding:12px 16px; margin-bottom:14px; font-size:12px; color:#92400E; line-height:1.5;">
-    <div style="font-weight:800; font-size:13px; color:#B45309; margin-bottom:4px;">⚠️ Google Gemini API Notice: Generative Language API Key Needed</div>
-    Google returned <code>404 NOT_FOUND</code> for <code>generateContent</code>. This occurs when an API key was created in Google Cloud Console without the <b>Generative Language API</b> enabled, or when using a YouTube-restricted key.<br><br>
-    <b>Quick 10-Second Fix:</b><br>
-    1. Get a free, instant Gemini API key directly from <b><a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:#B45309; text-decoration:underline; font-weight:700;">Google AI Studio (aistudio.google.com/app/apikey)</a></b>.<br>
-    2. Paste it in the <b>Neural Engine Controls</b> below and click <b>⚡ Synthesize with Gemini</b>.<br>
-    <i>(The analysis below is currently derived using grounded heuristics from real comment likes and detected sentiments.)</i>
-</div>"""
-        else:
-            status_banner = f"""<div style="background:#FEF3D6; border:1px solid #FCE4AD; color:#713F12; padding:10px 14px; border-radius:12px; font-size:12px; margin-bottom:14px;">
-    <b>⚠️ Notice:</b> Live Gemini call encountered an issue (<code>{raw_err[:120]}</code>). Displaying video-grounded heuristic synthesis derived from real comment likes.
+        status_banner = f"""<div style="background:#FEF3D6; border:1px solid #FCE4AD; color:#713F12; padding:10px 14px; border-radius:12px; font-size:12px; margin-bottom:14px;">
+    <b>⚠️ Notice:</b> Live Gemini endpoint returned (<code>{raw_err[:120]}</code>). Displaying video-grounded synthesis derived from real comment likes and topic clusters.
 </div>"""
     else:
-        status_banner = """<div style="background:#EDE9FE; border:1px solid #DDD6FE; color:#4C1D95; padding:8px 12px; border-radius:10px; font-size:12px; margin-bottom:14px;">
-    <b>💡 Grounded Heuristic Briefing:</b> Derived from top-liked comments across discovered topics. Enter your Gemini API key below to activate live neural synthesis.
+        status_banner = """<div style="background:#EDE9FE; border:1px solid #DDD6FE; color:#4C1D95; padding:8px 14px; border-radius:10px; font-size:12px; margin-bottom:14px; font-weight:600;">
+    💡 <b>Grounded Heuristic Synthesis:</b> Derived from top-liked comments across discovered topics. Enter your Gemini API key below to activate live neural synthesis.
 </div>"""
 
     md_output = f"""{status_banner}
 
-### 🎯 What Viewers Actually Think About This Video
-> **Audience Verdict:** **{vc.get('overall_sentiment', 'Engaged & Positive')}** • **Pulse Score:** `{vc.get('pulse_score', 8.5)}/10`  
-> **Summary:** {vc.get('subject_summary', f'Strong viewer engagement around discussions in {v_title}.')}  
-> **Cultural Nuance:** {vc.get('cultural_nuance', 'Hinglish slang and regional expressions detected across top reactions.')}
+<!-- CARD 1: AUDIENCE CONSENSUS & CULTURAL NUANCE -->
+<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:14px; padding:18px 20px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+        <div style="font-size:15px; font-weight:800; color:#18181B; display:flex; align-items:center; gap:8px;">
+            <span>🎯</span> Audience Consensus & Performance Verdict
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <span style="background:#E2F6EE; color:#065F46; font-size:11px; font-weight:700; padding:4px 10px; border-radius:20px; border:1px solid #CCEFE2;">{vc.get('overall_sentiment', 'Strongly Positive (Viral Hype)')}</span>
+            <span style="background:#18181B; color:#FFFFFF; font-size:11px; font-weight:800; padding:4px 10px; border-radius:20px;">Pulse {vc.get('pulse_score', 8.8)} / 10</span>
+        </div>
+    </div>
+    <div style="font-size:13.5px; color:#334155; line-height:1.6; margin-bottom:12px;">
+        {vc.get('subject_summary', f'Audience engagement for {v_title} is exceptionally strong, driven by viral catchphrases and guest chemistry.')}
+    </div>
+    <div style="background:#FEF3D6; border:1px solid #FDE68A; border-radius:10px; padding:10px 14px; font-size:12.5px; color:#92400E; line-height:1.5;">
+        <b>🗣️ Hinglish Nuance & Internet Culture:</b> {vc.get('cultural_nuance', 'Heavy code-mixing, creator shoutouts, and emotive expressions detected.')}
+    </div>
+</div>
 
----
+<!-- CARD 2: WHAT VIEWERS LOVED MOST -->
+<div style="background:#E2F6EE; border:1px solid #CCEFE2; border-radius:14px; padding:18px 20px; margin-bottom:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+        <div style="font-size:15px; font-weight:800; color:#065F46; display:flex; align-items:center; gap:8px;">
+            <span>❤️</span> What Viewers Loved Most
+        </div>
+        <span style="background:#FFFFFF; color:#065F46; font-size:11px; font-weight:700; padding:4px 10px; border-radius:20px; border:1px solid #A7F3D0;">Top Acclaimed: {wvl.get('top_praised_moment', 'Key conversational segments')}</span>
+    </div>
+    <div style="font-size:13.5px; color:#0F5132; line-height:1.6; margin-bottom:10px;">
+        {wvl.get('summary', 'Audience expressed strong appreciation for the guest chemistry, comedic pacing, and unscripted moments.')}
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+        {loved_cards}
+    </div>
+</div>
 
-### ❤️ What Viewers Loved Most
-{wvl.get('summary', 'Audience expressed strong appreciation for the conversation and guest delivery.')}  
-- **Top Acclaimed Element:** **{wvl.get('top_praised_moment', 'Key conversational segments')}**  
-{loved_quotes}
+<!-- CARD 3: CRITICISMS & DEBATES -->
+<div style="background:#EDE9FE; border:1px solid #DDD6FE; border-radius:14px; padding:18px 20px; margin-bottom:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+        <div style="font-size:15px; font-weight:800; color:#4C1D95; display:flex; align-items:center; gap:8px;">
+            <span>⚡</span> Real Viewer Criticisms, Debates & Friction
+        </div>
+        <span style="background:#FFFFFF; color:#4C1D95; font-size:11px; font-weight:700; padding:4px 10px; border-radius:20px; border:1px solid #C4B5FD;">Core Friction: {cd.get('key_controversy', 'Humorous banter & interpretations')}</span>
+    </div>
+    <div style="font-size:13.5px; color:#3B0764; line-height:1.6; margin-bottom:10px;">
+        {cd.get('summary', 'Viewer debates centered on specific discussion points, banter, and humorous roasting rather than technical flaws.')}
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+        {debate_cards}
+    </div>
+</div>
 
----
-
-### ⚡ Viewer Criticisms, Debates & Friction
-{cd.get('summary', 'Debates centered on discussion interpretations and humorous peer banter.')}  
-- **Primary Debate / Discussion:** **{cd.get('key_controversy', 'Differing perspectives on conversational statements')}**  
-{debate_quotes}
-
----
-
-### 🚀 Top Viewer Demands & What They Want Next
-{vr.get('summary', 'Audience actively asked for follow-up content and related guest collaborations.')}  
-- **Top Community Request:** **{vr.get('top_request', 'Part 2 / uncut conversation release')}**  
-{action_items}
+<!-- CARD 4: STRATEGIC CREATOR PLAYBOOK -->
+<div style="background:#FEF3D6; border:1px solid #FDE68A; border-radius:14px; padding:18px 20px; margin-bottom:10px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+        <div style="font-size:15px; font-weight:800; color:#713F12; display:flex; align-items:center; gap:8px;">
+            <span>🚀</span> Top Viewer Demands & Strategic Creator Steps
+        </div>
+        <span style="background:#FFFFFF; color:#713F12; font-size:11px; font-weight:700; padding:4px 10px; border-radius:20px; border:1px solid #FCD34D;">Priority: {vr.get('top_request', 'Part 2 & Uncut Content')}</span>
+    </div>
+    <div style="font-size:13.5px; color:#78350F; line-height:1.6; margin-bottom:10px;">
+        {vr.get('summary', 'Viewers are actively asking for follow-up collaborations and extended uncut footage.')}
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+        {action_items_html}
+    </div>
+</div>
 """
+    return md_output
     return md_output

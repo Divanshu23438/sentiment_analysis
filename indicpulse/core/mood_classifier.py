@@ -46,11 +46,21 @@ LABEL_COLORS = {
 # ──────────────────────────────────────────────
 
 _POSITIVE_SIGNALS = [
-    r"\b(fire|mast|badhiya|amazing|outstanding|superb|brilliant|ekdum|jabardast|"
+    r"\b(fire|mast|badhiya|badiya|amazing|outstanding|superb|brilliant|ekdum|jabardast|"
     r"subscribe|loved|best|fantastic|wonderful|perfect|great|excellent|waah|wah|"
-    r"fabulous|marvelous|phenomenal|damadar|kamaal)\b",
+    r"fabulous|marvelous|phenomenal|damadar|kamaal|dhamaal|bawaal|gazab|faad|katayi|"
+    r"hilarious|funny|wavy|mahol|scene|kya scene|anthem|banger|cute|goated|goat|op|"
+    r"legend|vibes|peak|crazy|insane|unreal|killing|level|energy|respect|king|"
+    r"wholesome|blockbuster|superhit|epic|kamzoriya|sirra|att|system|swag|"
+    r"gold|pure gold|gem|classic|entertaining|entertainment|enjoyed|slayed|"
+    r"dil jeet|pet dard|unhinged|shandar|shaandar|lajawab|chha gaye|kya baat|"
+    r"bohot sahi|bhot sahi|maza|mza|mazedar)\b",
+    r"\b(lol|lmao|lmfao|rofl|haha|hahaha|hahahaha|dead|dying)\b",
     r"\[fire_hype\]|\[heart_love\]|\[celebration_praise\]|\[ok_perfect\]|"
-    r"\[thumbs_up\]|\[love_amazed\]|\[mind_blown\]|\[rocket_amazing\]|\[hundred_perfect\]",
+    r"\[thumbs_up\]|\[love_amazed\]|\[mind_blown\]|\[rocket_amazing\]|\[hundred_perfect\]|"
+    r"\[laughing_hard\]|\[laughing_nervous\]|\[dance_celebration\]|\[dead_hilarious\]|"
+    r"\[stone_gigachad\]|\[clapping_praise\]|\[party_celebration\]|\[cool_confident\]|"
+    r"\[strong_motivation\]|\[love_adore\]",
 ]
 
 _SARCASTIC_SIGNALS = [
@@ -73,19 +83,34 @@ _TOXIC_SIGNALS = [
 _NEGATIVE_SIGNALS = [
     r"\b(problem|issue|complaint|broken|wrong|bad|terrible|awful|horrible|"
     r"disappoint|refund|delay|late|expensive|overpriced|galat|mehenga|"
-    r"kharab|bekar|fail|crash|bug)\b",
+    r"kharab|bekar|fail|crash|bug|audio\s*(?:kharab|low|issue|problem)|"
+    r"sound\s*(?:kharab|low)|mic\s*(?:kharab|issue)|boring|bore|unfunny)\b",
 ]
 
 POSITIVE_KEYWORDS = [
-    "love", "best", "bhai", "legend", "op", "mast", "season", "podcast",
+    "love", "best", "legend", "op", "mast",
     "superb", "great", "awesome", "fire", "fan", "badiya", "favourite",
-    "favorite", "king", "goat", "respect", "w", "clean", "vibes"
+    "favorite", "king", "goat", "goated", "respect", "w", "clean", "vibes",
+    "hilarious", "funny", "laugh", "laughing", "laughter", "haste", "hasi",
+    "mazza", "maza", "mazaa", "mazedar", "epic", "joke", "jokes", "humor", "comedy",
+    "lol", "lmao", "lmfao", "rofl", "haha", "hahaha", "hahahaha", "dead",
+    "wavy", "mahol", "scene", "kya scene", "anthem", "cute", "banger",
+    "kamzoriya", "gazab", "bawaal", "katayi", "faad", "dhamaal", "kamaal",
+    "sirra", "att", "system", "swag", "peak", "crazy", "insane", "unreal",
+    "next level", "god level", "superhit", "blockbuster", "wholesome", "talent",
+    "latent", "gold", "pure gold", "gem", "classic", "entertaining", "entertainment",
+    "enjoyed", "slayed", "dil jeet", "pet dard", "unhinged", "shandar", "shaandar",
+    "lajawab", "chha gaye", "kya baat", "bohot sahi", "bhot sahi"
 ]
 
 POSITIVE_EMOJIS_AND_TAGS = [
-    "❤️", "🔥", "🙌", "💪", "😂", "😍", "✨", "👑", "👌", "💯",
+    "❤️", "🔥", "🙌", "💪", "😂", "🤣", "😅", "😆", "😍", "✨", "👑", "👌", "💯",
+    "💃", "🕺", "🗿", "💀", "☠️", "👏", "🤩", "🥳",
     "[love_praise]", "[fire_hype]", "[heart_love]", "[celebration_praise]",
-    "[ok_perfect]", "[thumbs_up]", "[love_amazed]", "[rocket_amazing]", "[hundred_perfect]"
+    "[ok_perfect]", "[thumbs_up]", "[love_amazed]", "[rocket_amazing]", "[hundred_perfect]",
+    "[laughing_hard]", "[laughing_nervous]", "[dance_celebration]", "[dead_hilarious]",
+    "[stone_gigachad]", "[clapping_praise]", "[party_celebration]", "[cool_confident]",
+    "[strong_motivation]", "[love_adore]"
 ]
 
 

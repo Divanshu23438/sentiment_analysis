@@ -1447,7 +1447,7 @@ elif st.session_state.active_page == "Dashboard":
             # Combined Latest Gemini Executive Insights
             with st.container(border=True):
                 st.markdown("<div style='font-size:14px; font-weight:800; color:#1E293B; margin-bottom:10px;'>Latest Strategic Executive Synthesis</div>", unsafe_allow_html=True)
-                st.markdown(st.session_state.analysis_history[0]["exec_summary"])
+                st.markdown(st.session_state.analysis_history[0]["exec_summary"], unsafe_allow_html=True)
 
         with dash_right:
             # Cumulative Mood Donut
