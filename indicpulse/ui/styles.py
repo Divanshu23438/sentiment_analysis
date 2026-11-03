@@ -559,6 +559,85 @@ div[data-testid="stTabs"] button[aria-selected="true"] {{
     justify-content: space-between;
     align-items: center;
 }}
+
+/* ── SCORE INFORMATION TOOLTIPS & INFO (i) BUTTONS ─────── */
+.info-circle {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 19px;
+    height: 19px;
+    border-radius: 50%;
+    background: rgba(24, 24, 27, 0.08);
+    color: #18181B;
+    font-size: 11px;
+    font-weight: 800;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    cursor: help;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    border: 1px solid rgba(24, 24, 27, 0.15);
+    user-select: none;
+    line-height: 1;
+}}
+
+.info-circle:hover {{
+    background: #18181B !important;
+    color: #FFFFFF !important;
+    transform: scale(1.1);
+    box-shadow: 0 2px 8px rgba(24, 24, 27, 0.25);
+}}
+
+.has-tooltip {{
+    position: relative;
+    cursor: help;
+}}
+
+.has-tooltip::after {{
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: -8px;
+    background: #18181B;
+    color: #FFFFFF;
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 1.5;
+    padding: 10px 14px;
+    border-radius: 10px;
+    white-space: normal;
+    width: 260px;
+    z-index: 999999;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(4px);
+    transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    text-transform: none;
+    letter-spacing: normal;
+}}
+
+.has-tooltip::before {{
+    content: '';
+    position: absolute;
+    bottom: calc(100% + 2px);
+    right: 4px;
+    border-width: 6px 6px 0 6px;
+    border-style: solid;
+    border-color: #18181B transparent transparent transparent;
+    z-index: 999999;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+}}
+
+.has-tooltip:hover::after,
+.has-tooltip:hover::before {{
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}}
 </style>
 """
 
