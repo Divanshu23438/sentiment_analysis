@@ -165,9 +165,19 @@ def generate_executive_summary(
     <span>🟢</span> Live Gemini AI Active &bull; Engine: <code>{model_used}</code>
 </div>"""
     elif raw_summary.get("_gemini_error"):
-        err_msg = str(raw_summary.get("_gemini_error"))[:150]
-        status_banner = f"""<div style="background:#FEF3D6; border:1px solid #FCE4AD; color:#713F12; padding:8px 12px; border-radius:10px; font-size:12px; margin-bottom:14px;">
-    <b>⚠️ Notice:</b> Live Gemini call encountered an issue (<code>{err_msg}</code>). Displaying video-grounded heuristic synthesis derived from real comment likes.
+        raw_err = str(raw_summary.get("_gemini_error"))
+        if "404" in raw_err:
+            status_banner = """<div style="background:#FFFBEB; border:1px solid #FCD34D; border-radius:12px; padding:12px 16px; margin-bottom:14px; font-size:12px; color:#92400E; line-height:1.5;">
+    <div style="font-weight:800; font-size:13px; color:#B45309; margin-bottom:4px;">⚠️ Google Gemini API Notice: Generative Language API Key Needed</div>
+    Google returned <code>404 NOT_FOUND</code> for <code>generateContent</code>. This occurs when an API key was created in Google Cloud Console without the <b>Generative Language API</b> enabled, or when using a YouTube-restricted key.<br><br>
+    <b>Quick 10-Second Fix:</b><br>
+    1. Get a free, instant Gemini API key directly from <b><a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:#B45309; text-decoration:underline; font-weight:700;">Google AI Studio (aistudio.google.com/app/apikey)</a></b>.<br>
+    2. Paste it in the <b>Neural Engine Controls</b> below and click <b>⚡ Synthesize with Gemini</b>.<br>
+    <i>(The analysis below is currently derived using grounded heuristics from real comment likes and detected sentiments.)</i>
+</div>"""
+        else:
+            status_banner = f"""<div style="background:#FEF3D6; border:1px solid #FCE4AD; color:#713F12; padding:10px 14px; border-radius:12px; font-size:12px; margin-bottom:14px;">
+    <b>⚠️ Notice:</b> Live Gemini call encountered an issue (<code>{raw_err[:120]}</code>). Displaying video-grounded heuristic synthesis derived from real comment likes.
 </div>"""
     else:
         status_banner = """<div style="background:#EDE9FE; border:1px solid #DDD6FE; color:#4C1D95; padding:8px 12px; border-radius:10px; font-size:12px; margin-bottom:14px;">

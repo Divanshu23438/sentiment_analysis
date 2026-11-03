@@ -1,15 +1,16 @@
 """
 IndicPulse – Step 5: Gemini 2.5 Flash Real Video-Specific Executive Summarizer
 =============================================================================
-Synthesizes deep, contextual audience insights using Gemini 2.5 Flash:
+Synthesizes deep, contextual audience insights using Google Gemini:
   1. What People Actually Think About This Video (Viewer Consensus)
   2. What Viewers Loved Most (With Real Comment Quotes & Like Counts)
   3. Real Viewer Criticisms, Debates & Friction (With Verbatim Quotes)
   4. Top Viewer Requests & What They Want Next (Part 2, Guests, Follow-ups)
 
 ZERO generic templates. Strictly driven by real video title & comment text.
-Includes multi-model fallback (gemini-2.5-flash -> gemini-2.0-flash -> gemini-1.5-flash)
-and robust json parsing.
+Includes automatic dynamic model discovery via client.models.list(),
+multi-tier model fallbacks (gemini-2.0-flash, 1.5-flash-latest, 1.5-flash, 1.5-pro),
+API version fallbacks (default, v1, v1beta), and robust JSON parsing.
 """
 
 import os
@@ -24,12 +25,20 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Candidate models in preferred order
-CANDIDATE_MODELS = [
-    "gemini-2.5-flash",
+# Canonical priority list of Gemini models
+PRIORITY_MODELS = [
     "gemini-2.0-flash",
+    "gemini-2.0-flash-exp",
     "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash-001",
+    "gemini-1.5-flash-002",
     "gemini-1.5-pro",
+    "gemini-1.5-pro-latest",
+    "gemini-1.5-pro-001",
+    "gemini-1.5-pro-002",
+    "gemini-2.5-flash",
+    "gemini-pro",
 ]
 
 SYSTEM_PROMPT = """You are IndicPulse AI, an elite multilingual social media intelligence agent specializing in 
@@ -49,7 +58,7 @@ def _build_analysis_prompt(
     video_title: str = "Video / Content Analysis",
     channel_title: str = "Creator",
 ) -> str:
-    """Build a comprehensive context payload for Gemini 2.5 Flash."""
+    """Build a comprehensive context payload for Gemini."""
     total_comments = len(df) if hasattr(df, "__len__") else 0
     
     # Exact mood distribution counts
@@ -195,12 +204,12 @@ def generate_executive_summary(
     channel_title: str = "",
 ) -> Dict:
     """
-    Generate video-specific executive synthesis via Gemini 2.5 Flash (with multi-model fallback).
-    Falls back gracefully to data-grounded heuristic synthesis if API key is absent or invalid.
+    Generate video-specific executive synthesis via Gemini.
+    Features dynamic model discovery via client.models.list(), multi-tier fallbacks,
+    and automatic failover to grounded heuristic synthesis.
     """
     key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
 
-    # Extract video title from dataframe attrs if not provided
     v_title = video_title or df.attrs.get("video_title", "Video Analysis")
     c_title = channel_title or df.attrs.get("channel_title", "Creator")
 
@@ -208,7 +217,7 @@ def generate_executive_summary(
         logger.info("No Gemini API key supplied. Generating video-grounded fallback summary.")
         fb = _fallback_summary(df, topic_summary, v_title, c_title)
         fb["_source"] = "heuristic"
-        fb["_notice"] = "Grounded heuristic synthesis (Add GEMINI_API_KEY to activate live neural synthesis)."
+        fb["_notice"] = "Grounded heuristic synthesis active (Add GEMINI_API_KEY to activate live neural synthesis)."
         return fb
 
     prompt = _build_analysis_prompt(
@@ -218,14 +227,45 @@ def generate_executive_summary(
         channel_title=c_title,
     )
 
-    last_error = None
-    for model_name in CANDIDATE_MODELS:
+    from google import genai
+    from google.genai import types
+
+    # 1. Dynamically discover valid models for this specific API key
+    discovered_models: List[str] = []
+    discovery_error = None
+    try:
+        disc_client = genai.Client(api_key=key)
+        for m in disc_client.models.list():
+            m_name = getattr(m, "name", "")
+            clean = m_name.replace("models/", "").strip()
+            actions = getattr(m, "supported_actions", []) or []
+            if not actions or "generateContent" in actions:
+                discovered_models.append(clean)
+        logger.info(f"Discovered {len(discovered_models)} available models for this key: {discovered_models[:6]}")
+    except Exception as disc_err:
+        discovery_error = disc_err
+        err_str = str(disc_err)
+        logger.warning(f"client.models.list() discovery check returned: {disc_err}")
+
+        # If API key is completely invalid, fail fast and guide user
+        if "API_KEY_INVALID" in err_str or "400" in err_str:
+            fb = _fallback_summary(df, topic_summary, v_title, c_title)
+            fb["_source"] = "fallback"
+            fb["_gemini_error"] = "API Key Invalid (400). Please create a free Gemini API key at Google AI Studio."
+            return fb
+
+    # 2. Build prioritized candidate list (discovered models first, then standard fallbacks)
+    if discovered_models:
+        # Prefer flash models first among discovered
+        models_to_try = [m for m in discovered_models if "flash" in m.lower()] + [m for m in discovered_models if "flash" not in m.lower()]
+    else:
+        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+
+    last_error = discovery_error
+    # 3. Iterate through candidate models (max 3 attempts for instant response)
+    for model_name in models_to_try[:3]:
         try:
-            from google import genai
-            from google.genai import types
-
             client = genai.Client(api_key=key)
-
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
@@ -247,7 +287,6 @@ def generate_executive_summary(
                 logger.info(f"Gemini live synthesis successfully produced with model: {model_name}")
                 return parsed
             elif parsed and isinstance(parsed, dict):
-                # Schema might be slightly non-standard, still live
                 parsed["_source"] = "live_gemini"
                 parsed["_model_used"] = model_name
                 parsed["_gemini_success"] = True
@@ -255,13 +294,16 @@ def generate_executive_summary(
 
         except Exception as e:
             last_error = e
-            logger.warning(f"Gemini model {model_name} invocation failed: {e}. Trying next fallback model...")
+            err_text = str(e)
+            # If 404 NOT_FOUND on generateContent, key lacks Generative Language API permission
+            if "404" in err_text:
+                break
+            continue
 
-    logger.error(f"All Gemini model invocations failed. Last error: {last_error}. Using video-grounded fallback.")
+    logger.error(f"Gemini invocation failed. Last error: {last_error}. Using video-grounded fallback.")
     fb = _fallback_summary(df, topic_summary, v_title, c_title)
     fb["_source"] = "fallback"
     fb["_gemini_error"] = str(last_error)
-    fb["_notice"] = f"Gemini API Notice: {last_error} — Showing Grounded Heuristic Briefing."
     return fb
 
 

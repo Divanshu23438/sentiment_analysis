@@ -981,7 +981,8 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
 
             active_gem_key = get_gemini_api_key()
             st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-            with st.expander("⚡ Google Gemini 2.5 Flash Neural Engine Controls", expanded=not bool(active_gem_key)):
+            with st.expander("⚡ Google Gemini Neural Engine Controls", expanded=not bool(active_gem_key)):
+                st.caption("💡 Free AI Studio keys work immediately without GCP setup: [Get Free Gemini API Key at Google AI Studio](https://aistudio.google.com/app/apikey)")
                 g_col1, g_col2 = st.columns([3, 1.3])
                 with g_col1:
                     gem_input = st.text_input(
@@ -990,7 +991,7 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
                         type="password",
                         key=f"gem_inline_in_{run_data['id']}",
                         placeholder="Paste AI Studio API Key (AIzaSy...)",
-                        help="Enter your Google Gemini API key to activate live 2.5 Flash neural synthesis."
+                        help="Enter your Google Gemini API key to activate live neural synthesis."
                     )
                 with g_col2:
                     st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
