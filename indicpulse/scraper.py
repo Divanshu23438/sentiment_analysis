@@ -215,40 +215,36 @@ def fetch_comments_via_network_interception(
 
         # ── Anti-bot auto-scroll loop ─────────────────────────────────────
         try:
-            last_height: int = page.evaluate("document.body.scrollHeight")
+            last_height = page.evaluate("document.body.scrollHeight")
         except (PlaywrightError, Exception) as exc:
             logger.warning("Could not read initial document height: %s", exc)
             last_height = 0
 
-        stall_count: int = 0
+        scroll_attempts = 0
 
-        while len(comments_data) < max_comments and stall_count < 50:
+        while len(comments_data) < max_comments and scroll_attempts < 50:
             try:
                 page.evaluate("window.scrollBy(0, 1500)")
-            except (PlaywrightError, Exception) as exc:
-                logger.warning(
-                    "Execution context destroyed or navigation occurred during scroll (redirect detected): %s",
-                    exc,
-                )
+                time.sleep(random.uniform(1.5, 3.5)) 
+
+                new_height = page.evaluate("document.body.scrollHeight")
+                if new_height == last_height:
+                    scroll_attempts += 1
+                else:
+                    scroll_attempts = 0
+                    last_height = new_height
+
+            except PlaywrightError as e:
+                # If the platform forces a redirect (like a login wall), stop scrolling cleanly.
+                if "Execution context was destroyed" in str(e) or "Target closed" in str(e):
+                    print("Page redirected or closed (likely an anti-bot login wall). Stopping scroll.")
+                    break 
+                else:
+                    print(f"Non-fatal Playwright error during scroll: {e}")
+                    break
+            except Exception as e:
+                print(f"Unexpected error during scroll: {e}")
                 break
-
-            # Randomised human-like pause
-            time.sleep(random.uniform(1.5, 3.5))
-
-            try:
-                new_height: int = page.evaluate("document.body.scrollHeight")
-            except (PlaywrightError, Exception) as exc:
-                logger.warning(
-                    "Execution context destroyed or navigation occurred during height check (redirect detected): %s",
-                    exc,
-                )
-                break
-
-            if new_height == last_height:
-                stall_count += 1
-            else:
-                stall_count = 0
-                last_height = new_height
 
         try:
             browser.close()
@@ -259,8 +255,10 @@ def fetch_comments_via_network_interception(
     comments_data = comments_data[:max_comments]
 
     # Keep only entries that have non-empty text
-    valid = [(c["text"], c.get("likes", 0)) for c in comments_data if c.get("text", "").strip()]
-    if not valid:
+    extracted_texts = [c.get("text", "").strip() for c in comments_data if c.get("text", "").strip()]
+    extracted_likes = [c.get("likes", 0) for c in comments_data if c.get("text", "").strip()]
+
+    if not extracted_texts:
         raise ValueError(
             "No valid comments found. The platform blocked the request, required a "
             "logged-in user session, or used an unrecognized data structure.\n\n"
@@ -272,16 +270,14 @@ def fetch_comments_via_network_interception(
             "'Upload CSV' instead."
         )
 
-    texts, likes = zip(*valid)
-
     df = pd.DataFrame(
         {
-            "comment_id": [f"scraped_{i:04d}" for i in range(len(texts))],
-            "author": ["Anonymous"] * len(texts),
-            "text": list(texts),
+            "comment_id": [f"scraped_{i:04d}" for i in range(len(extracted_texts))],
+            "author": ["Anonymous"] * len(extracted_texts),
+            "text": extracted_texts,
             "timestamp": pd.NaT,
-            "like_count": list(likes),
-            "source": [platform.lower()] * len(texts),
+            "like_count": extracted_likes,
+            "source": [platform.lower()] * len(extracted_texts),
         }
     )
 
