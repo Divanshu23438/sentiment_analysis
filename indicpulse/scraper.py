@@ -20,6 +20,13 @@ import logging
 
 import pandas as pd
 
+try:
+    from playwright.sync_api import Error as PlaywrightError
+except ImportError:
+    class PlaywrightError(Exception):  # type: ignore
+        """Fallback exception when playwright is not installed."""
+        pass
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -207,22 +214,46 @@ def fetch_comments_via_network_interception(
             logger.warning("Navigation note (%s): %s", url, exc)
 
         # ── Anti-bot auto-scroll loop ─────────────────────────────────────
-        last_height: int = page.evaluate("document.body.scrollHeight")
+        try:
+            last_height: int = page.evaluate("document.body.scrollHeight")
+        except (PlaywrightError, Exception) as exc:
+            logger.warning("Could not read initial document height: %s", exc)
+            last_height = 0
+
         stall_count: int = 0
 
         while len(comments_data) < max_comments and stall_count < 50:
-            page.evaluate("window.scrollBy(0, 1500)")
+            try:
+                page.evaluate("window.scrollBy(0, 1500)")
+            except (PlaywrightError, Exception) as exc:
+                logger.warning(
+                    "Execution context destroyed or navigation occurred during scroll (redirect detected): %s",
+                    exc,
+                )
+                break
+
             # Randomised human-like pause
             time.sleep(random.uniform(1.5, 3.5))
 
-            new_height: int = page.evaluate("document.body.scrollHeight")
+            try:
+                new_height: int = page.evaluate("document.body.scrollHeight")
+            except (PlaywrightError, Exception) as exc:
+                logger.warning(
+                    "Execution context destroyed or navigation occurred during height check (redirect detected): %s",
+                    exc,
+                )
+                break
+
             if new_height == last_height:
                 stall_count += 1
             else:
                 stall_count = 0
                 last_height = new_height
 
-        browser.close()
+        try:
+            browser.close()
+        except Exception as exc:
+            logger.warning("Browser close warning: %s", exc)
 
     # ── Post-processing ───────────────────────────────────────────────────
     comments_data = comments_data[:max_comments]
