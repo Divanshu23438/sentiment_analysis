@@ -16,6 +16,7 @@ import sys
 import os
 import re
 import time
+import textwrap
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -55,21 +56,47 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── SAFE HTML RENDERING WRAPPER (PREVENTS COMMONMARK INDENTED CODE BLOCKS) ──
+# ── SAFE HTML & MARKDOWN RENDERING WRAPPERS ───────────────────
 _orig_st_markdown = st.markdown
 
 def render_html(html_str: str):
     """Safely renders HTML via st.markdown without CommonMark interpreting leading indentation as code blocks."""
-    cleaned = "\n".join(line.strip() for line in html_str.splitlines() if line.strip())
+    cleaned = textwrap.dedent(html_str).strip()
     _orig_st_markdown(cleaned, unsafe_allow_html=True)
 
 def safe_markdown(body, *args, **kwargs):
-    if kwargs.get("unsafe_allow_html", False) and isinstance(body, str):
-        # Strip all leading/trailing whitespace from each line so CommonMark never triggers code blocks
-        body = "\n".join(line.strip() for line in body.splitlines() if line.strip())
+    if isinstance(body, str):
+        # Dedent leading whitespace so multiline indentation is not treated as code blocks,
+        # preserving blank lines, paragraphs, and markdown lists intact.
+        body = textwrap.dedent(body).strip()
     return _orig_st_markdown(body, *args, **kwargs)
 
 st.markdown = safe_markdown
+
+def render_gemini_summary(summary_text: str):
+    """
+    Renders Gemini Executive Summary cleanly:
+    - Strips code fences if present (```markdown ... ```)
+    - Separates HTML status banner from Markdown content so CommonMark renders headings & lists cleanly
+    """
+    if not summary_text:
+        st.info("No executive summary generated yet.")
+        return
+
+    text = str(summary_text).strip()
+    text = re.sub(r"^```(?:markdown)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    text = textwrap.dedent(text).strip()
+
+    if text.startswith("<div") and "</div>" in text:
+        div_end = text.find("</div>") + len("</div>")
+        banner_html = text[:div_end].strip()
+        markdown_part = text[div_end:].strip()
+        _orig_st_markdown(banner_html, unsafe_allow_html=True)
+        if markdown_part:
+            _orig_st_markdown(markdown_part)
+    else:
+        _orig_st_markdown(text, unsafe_allow_html=True)
 
 # ── PERSISTENT SESSION STATE INITIALIZATION ────────────────────
 if "active_page" not in st.session_state:
@@ -90,6 +117,8 @@ if "gemini_api_key" not in st.session_state:
     st.session_state.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
 if "youtube_api_key" not in st.session_state:
     st.session_state.youtube_api_key = os.getenv("YOUTUBE_API_KEY", "")
+if "exec_summary" not in st.session_state:
+    st.session_state.exec_summary = ""
 if "analysis_history" not in st.session_state:
     st.session_state.analysis_history = []
 if "selected_history_id" not in st.session_state:
@@ -264,23 +293,43 @@ def filter_comments_for_inspector(df: pd.DataFrame, f_type: str, f_val: Any = No
     return f_df, expl, badge
 
 
-@st.dialog("Score Evidence & Comment Inspector", width="large")
-def render_inspector_dialog(df_source: pd.DataFrame, title: str, f_type: str, f_val: Any = None):
-    """Full-featured modal dialog with mathematical explanation, counters, search, and CSV export."""
-    f_df, math_expl, badge = filter_comments_for_inspector(df_source, f_type, f_val)
+@st.dialog("Evidence Inspector", width="large")
+def render_inspector_dialog(df_source: Optional[pd.DataFrame] = None, title: Optional[str] = None, f_type: Optional[str] = None, f_val: Any = None):
+    """
+    Evidence Inspector Modal Dialog.
+    Dynamically filters st.session_state.df_clustered (by Mood, Topic, or Weight)
+    and displays the comments in st.dataframe(), showing the exact raw_text, likes, mood, and text_for_muril.
+    """
+    insp_title = title or st.session_state.get("inspector_title", "Evidence Inspector")
+    insp_type = f_type or st.session_state.get("inspector_filter_type", "ALL")
+    insp_val = f_val if f_val is not None else st.session_state.get("inspector_filter_val", None)
+
+    target_df = df_source if (df_source is not None and not df_source.empty) else st.session_state.get("df_clustered")
+    if target_df is None or target_df.empty:
+        target_df = st.session_state.get("df_mood", pd.DataFrame())
+
+    if target_df.empty:
+        st.info("No comments found in dataset to inspect.")
+        if st.button("Close Inspector", key="btn_close_empty_insp", use_container_width=True):
+            st.session_state.inspector_open = False
+            st.rerun()
+        return
+
+    f_df, math_expl, badge = filter_comments_for_inspector(target_df, insp_type, insp_val)
+
     st.markdown(f"""
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <span style="font-size:17px; font-weight:800; color:#18181B;">{title}</span>
+        <span style="font-size:17px; font-weight:800; color:#18181B;">{insp_title}</span>
         <span class="pill-badge" style="background:#18181B; color:#FFFFFF;">{badge}</span>
     </div>
     <div style="font-size:12px; color:#475569; background:#F8FAFC; border:1px solid #EAEEF4; border-radius:12px; padding:10px 14px; margin-bottom:14px; line-height:1.5;">
-        📐 <b>Mathematical Evidence:</b> {math_expl}
+        📐 <b>Evidence Logic:</b> {math_expl}
     </div>
     """, unsafe_allow_html=True)
 
     mc1, mc2, mc3 = st.columns(3)
     with mc1:
-        st.metric("Total Comments", f"{len(f_df):,}")
+        st.metric("Total Filtered Comments", f"{len(f_df):,}")
     with mc2:
         tot_l = int(f_df['likes'].sum()) if 'likes' in f_df.columns else (int(f_df['like_count'].sum()) if 'like_count' in f_df.columns else 0)
         st.metric("Aggregate Likes", f"{tot_l:,}")
@@ -288,37 +337,46 @@ def render_inspector_dialog(df_source: pd.DataFrame, title: str, f_type: str, f_
         avg_w = f_df['engagement_weight'].mean() if 'engagement_weight' in f_df.columns else 1.0
         st.metric("Avg Engagement Weight", f"{avg_w:.2f}")
 
-    search_kw = st.text_input("🔍 Filter keywords...", placeholder="Type keywords to filter rows...", key=f"dlg_search_{f_type}_{f_val}")
+    search_kw = st.text_input("🔍 Filter keywords in comments...", placeholder="Type to filter rows...", key=f"dlg_search_{insp_type}_{insp_val}")
     if search_kw:
         t_col = "raw_text" if "raw_text" in f_df.columns else "text"
         f_df = f_df[f_df[t_col].astype(str).str.contains(search_kw, case=False, na=False)]
 
-    # Format user-friendly columns with Active Topic prominently as Column 1
-    display_df = pd.DataFrame()
-    display_df["Active Topic Discussed"] = f_df.get("topic_name", f_df.get("topic_label", "General Discussion"))
-    display_df["Comment Text"] = f_df.get("raw_text", f_df.get("text", ""))
-    display_df["Likes"] = f_df.get("likes", f_df.get("like_count", 0))
-    display_df["Sentiment Mood"] = f_df.get("mood", f_df.get("mood_label", "Neutral"))
-    if "engagement_weight" in f_df.columns:
-        display_df["Engagement Weight"] = f_df["engagement_weight"].round(2)
+    # Guarantee required columns: exact raw_text, likes, mood, and text_for_muril
+    f_df_clean = f_df.copy()
+    if "raw_text" not in f_df_clean.columns:
+        f_df_clean["raw_text"] = f_df_clean.get("text", "")
+    if "likes" not in f_df_clean.columns:
+        f_df_clean["likes"] = f_df_clean.get("like_count", 0)
+    if "mood" not in f_df_clean.columns:
+        f_df_clean["mood"] = f_df_clean.get("mood_label", "Neutral")
+    if "text_for_muril" not in f_df_clean.columns:
+        f_df_clean["text_for_muril"] = f_df_clean.get("text_for_mood", f_df_clean["raw_text"])
+
+    display_cols = ["raw_text", "likes", "mood", "text_for_muril"]
+    if "topic_name" in f_df_clean.columns:
+        display_cols = ["topic_name"] + display_cols
+    elif "topic_label" in f_df_clean.columns:
+        f_df_clean["topic_name"] = f_df_clean["topic_label"]
+        display_cols = ["topic_name"] + display_cols
 
     st.dataframe(
-        display_df,
+        f_df_clean[display_cols],
         use_container_width=True,
         height=320,
         column_config={
-            "Active Topic Discussed": st.column_config.TextColumn("Active Topic Discussed", width="medium"),
-            "Comment Text": st.column_config.TextColumn("Comment Text", width="large"),
-            "Likes": st.column_config.NumberColumn("Likes", format="%d", width="small"),
-            "Sentiment Mood": st.column_config.TextColumn("Sentiment Mood", width="medium"),
-            "Engagement Weight": st.column_config.NumberColumn("Weight (W)", format="%.2f", width="small"),
+            "raw_text": st.column_config.TextColumn("Comment Text (raw_text)", width="large"),
+            "likes": st.column_config.NumberColumn("Likes", format="%d", width="small"),
+            "mood": st.column_config.TextColumn("Mood", width="medium"),
+            "text_for_muril": st.column_config.TextColumn("MuRIL Preprocessed (text_for_muril)", width="medium"),
+            "topic_name": st.column_config.TextColumn("Topic Cluster", width="medium"),
         }
     )
 
     bc1, bc2 = st.columns([1, 1])
     with bc1:
-        csv_data = display_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Export Filtered Comments (CSV)", data=csv_data, file_name=f"indicpulse_inspect_{f_type}.csv", mime="text/csv", use_container_width=True)
+        csv_data = f_df_clean[display_cols].to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Export Filtered Comments (CSV)", data=csv_data, file_name=f"indicpulse_inspect_{insp_type}.csv", mime="text/csv", use_container_width=True)
     with bc2:
         if st.button("Close Inspector Modal", key="close_dlg_btn", use_container_width=True):
             st.session_state.inspector_open = False
@@ -348,6 +406,7 @@ font_pct = f"{st.session_state.font_scale}%"
 st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700;800&display=swap');
 
     html, body, [class*="css"] {{
         font-family: 'Plus Jakarta Sans', -apple-system, sans-serif !important;
@@ -435,48 +494,60 @@ st.markdown(f"""
         border: {card_border_mint};
         color: #0F5132;
         border-radius: 22px;
-        padding: 22px;
+        padding: 16px 20px;
+        height: 145px;
         min-height: 145px;
+        max-height: 145px;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
         box-sizing: border-box;
+        margin-bottom: 0px !important;
     }}
     .bento-pink {{
         background-color: #FCE8EF;
         border: {card_border_pink};
         color: #881337;
         border-radius: 22px;
-        padding: 22px;
+        padding: 16px 20px;
+        height: 145px;
         min-height: 145px;
+        max-height: 145px;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
         box-sizing: border-box;
+        margin-bottom: 0px !important;
     }}
     .bento-yellow {{
         background-color: #FEF3D6;
         border: {card_border_yellow};
         color: #713F12;
         border-radius: 22px;
-        padding: 22px;
+        padding: 16px 20px;
+        height: 145px;
         min-height: 145px;
+        max-height: 145px;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
         box-sizing: border-box;
+        margin-bottom: 0px !important;
     }}
     .bento-purple {{
         background-color: #EDE9FE;
         border: {card_border_purple};
         color: #4C1D95;
         border-radius: 22px;
-        padding: 22px;
+        padding: 16px 20px;
+        height: 145px;
         min-height: 145px;
+        max-height: 145px;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
         box-sizing: border-box;
+        margin-bottom: 0px !important;
     }}
 
     /* Clean Pills and Micro-Badges */
@@ -600,42 +671,62 @@ st.markdown(f"""
     }}
 
     /* 3D Mechanical Odometer / Rolling Digit Counter */
-    .odo-container {{
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        background: #18181B;
-        padding: 6px 10px;
-        border-radius: 14px;
-        box-shadow: inset 0 3px 6px rgba(0,0,0,0.6), 0 4px 12px rgba(24,24,27,0.18);
-        border: 1px solid #3F3F46;
+    @keyframes rollUpOdometer {{
+        0% {{ transform: translateY(100%) scaleY(0.5); opacity: 0; filter: blur(2px); }}
+        100% {{ transform: translateY(0) scaleY(1); opacity: 1; filter: blur(0); }}
     }}
-    .odo-digit {{
-        background: linear-gradient(180deg, #27272A 0%, #3F3F46 48%, #18181B 52%, #27272A 100%);
-        color: #FFFFFF;
-        font-family: 'JetBrains Mono', 'Courier New', monospace;
-        font-size: 22px;
-        font-weight: 800;
-        min-width: 26px;
-        height: 36px;
-        border-radius: 7px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-top: 1px solid rgba(255,255,255,0.18);
-        border-bottom: 1px solid rgba(0,0,0,0.8);
-        box-shadow: inset 0 4px 8px rgba(0,0,0,0.45);
-        animation: odoRollIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+
+    .odo-container {{ 
+        display: inline-flex !important; 
+        gap: 2px !important; 
+        background: #18181B !important; 
+        padding: 4px 8px !important; 
+        border-radius: 8px !important; 
+        margin: 0 !important; 
+        align-items: center !important; 
+        box-shadow: inset 0 3px 6px rgba(0,0,0,0.6), 0 4px 12px rgba(24,24,27,0.18) !important;
+        overflow: hidden !important; /* Critical to hide the digits before they roll up */
     }}
+    .odo-digit {{ 
+        background: linear-gradient(180deg, #27272A 0%, #18181B 50%, #27272A 100%) !important; 
+        color: #FFFFFF !important; 
+        font-family: 'JetBrains Mono', monospace !important; 
+        font-size: 22px !important; 
+        font-weight: 700 !important; 
+        min-width: 24px !important; 
+        height: 32px !important; 
+        display: flex !important; 
+        align-items: center !important; 
+        justify-content: center !important; 
+        border-radius: 4px !important; 
+        margin: 0 !important; 
+        padding: 0 !important; 
+        line-height: 1 !important;
+        border-top: 1px solid rgba(255,255,255,0.15) !important;
+        border-bottom: 1px solid rgba(0,0,0,0.8) !important;
+        
+        /* The Animation Trigger */
+        animation: rollUpOdometer 0.85s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+        transform-origin: bottom center !important;
+    }}
+    
+    /* Stagger the animation so digits roll in one after another */
+    .odo-digit:nth-child(1) {{ animation-delay: 0.0s !important; }}
+    .odo-digit:nth-child(2) {{ animation-delay: 0.1s !important; }}
+    .odo-digit:nth-child(3) {{ animation-delay: 0.2s !important; }}
+    .odo-digit:nth-child(4) {{ animation-delay: 0.3s !important; }}
+    .odo-digit:nth-child(5) {{ animation-delay: 0.4s !important; }}
+    .odo-digit:nth-child(6) {{ animation-delay: 0.5s !important; }}
+    .odo-digit:nth-child(7) {{ animation-delay: 0.6s !important; }}
+
     .odo-sep {{
-        color: #A1A1AA;
-        font-weight: 800;
-        font-size: 18px;
-        padding: 0 2px;
-    }}
-    @keyframes odoRollIn {{
-        0% {{ transform: translateY(-100%) rotateX(60deg); opacity: 0; }}
-        100% {{ transform: translateY(0) rotateX(0deg); opacity: 1; }}
+        color: #A1A1AA !important;
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 18px !important;
+        font-weight: 700 !important;
+        padding: 0 1px !important;
+        margin: 0 !important;
+        line-height: 1 !important;
     }}
 
     /* Global Input & Button Overrides */
@@ -647,6 +738,34 @@ st.markdown(f"""
     .stButton > button {{
         border-radius: 12px !important;
         font-weight: 700 !important;
+    }}
+
+    /* Bento Inspect Buttons - Pixel-Perfect Bottom Alignment */
+    div[class*="st-key-drill_"],
+    div[class*="st-key-dash_inspect_"],
+    div[class*="st-key-topic_btn_"],
+    div[class*="st-key-dash_topic_btn_"] {{
+        margin-top: -6px !important;
+        margin-bottom: 0px !important;
+    }}
+    div[class*="st-key-drill_"] button,
+    div[class*="st-key-dash_inspect_"] button,
+    div[class*="st-key-topic_btn_"] button,
+    div[class*="st-key-dash_topic_btn_"] button {{
+        height: 38px !important;
+        min-height: 38px !important;
+        max-height: 38px !important;
+        border-radius: 12px !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        padding: 0 10px !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        box-shadow: 0 2px 6px rgba(24, 24, 27, 0.08) !important;
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -675,7 +794,13 @@ def execute_analysis_flow(
             def on_progress(fetched: int, target: int):
                 prog_text.caption(f"Fetched {fetched} / {target} comments...")
 
-            df_input = fetch_youtube_comments(video_url, yt_key, max_comments=max_comments, progress_callback=on_progress)
+            fetch_res = fetch_youtube_comments(video_url, yt_key, max_comments=max_comments, progress_callback=on_progress)
+            if isinstance(fetch_res, tuple):
+                df_input, fetched_title = fetch_res
+                if fetched_title and fetched_title != f"YouTube Video ({video_url})":
+                    target_title = fetched_title
+            else:
+                df_input = fetch_res
             prog_text.empty()
             st.write(f"1. Successfully fetched {len(df_input)} comments from YouTube.")
         else:
@@ -725,7 +850,7 @@ def execute_analysis_flow(
         topic_counts.columns = ["Topic", "Count"]
         num_topics = len(topic_counts[~topic_counts["Topic"].str.contains("Quarantin")])
     else:
-        topic_counts = pd.DataFrame({"Topic": ["General Feedback"], "Count": [total_c]})
+        topic_counts = pd.DataFrame({"Topic": ["Miscellaneous / Outliers"], "Count": [total_c]})
         num_topics = 1
 
     dom_mood = df_mood["mood"].mode()[0] if not df_mood.empty else "Neutral"
@@ -757,6 +882,9 @@ def execute_analysis_flow(
     st.session_state.analysis_history.insert(0, run_entry)
     st.session_state.latest_run = run_entry
     st.session_state.selected_history_id = run_id
+    st.session_state.df_clustered = df_clust
+    st.session_state.df_mood = df_mood
+    st.session_state.exec_summary = summary_text
 
 
 # ===============================================================
@@ -854,20 +982,24 @@ with st.sidebar:
 # ===============================================================
 # 3. HELPER: 3D MECHANICAL ODOMETER SCORE COMPONENT & BENTO GRID
 # ===============================================================
-def render_info_btn(tooltip: str, title: str = "") -> str:
-    """Renders a sleek interactive (i) popover button with high-contrast hover card and native fallback."""
+def render_info_tooltip(tooltip: str) -> str:
+    """Inject a subtle inline CSS tooltip info icon directly into HTML headers."""
     if not tooltip:
         return ""
     escaped_tip = str(tooltip).replace('"', '&quot;').replace("'", "&#39;")
-    title_html = f'<div style="font-weight:700; margin-bottom:4px; color:#FDE68A; font-size:12px;">{title}</div>' if title else ''
-    return f'''<span class="info-popover-wrap" title="{escaped_tip}">
-        <span class="info-popover-btn">i</span>
-        <span class="info-popover-card">{title_html}{escaped_tip}</span>
-    </span>'''
+    return f'<span title="{escaped_tip}" style="cursor:help; opacity:0.6; font-size:12px; margin-left:4px;">ℹ️</span>'
 
 
-def render_odometer_score(value_str: str, label: str, subtitle: str = "", theme: str = "mint", info_tooltip: str = "") -> str:
-    """Render a 3D Mechanical Odometer / Rolling Digit Counter inside a Bento Card theme with interactive (i) explanation button."""
+def render_info_btn(tooltip: str, title: str = "") -> str:
+    """Subtle inline CSS tooltip fallback."""
+    return render_info_tooltip(tooltip)
+
+
+def render_odometer_score(value_str: str, label: Optional[str] = None, subtitle: str = "", theme: str = "mint", info_tooltip: str = "") -> str:
+    """
+    Render 3D mechanical odometer rolling digits (.odo-digit drums inside .odo-container).
+    If label is provided, renders the complete Pastel Bento KPI Card.
+    """
     digits_html = []
     for ch in str(value_str):
         if ch in "0123456789":
@@ -876,26 +1008,33 @@ def render_odometer_score(value_str: str, label: str, subtitle: str = "", theme:
             digits_html.append(f'<span class="odo-sep">{ch}</span>')
         else:
             digits_html.append(f'<span class="odo-digit">{ch}</span>')
-    odo_bar = f'<div class="odo-container">{"".join(digits_html)}</div>'
-    sub_html = f'<div style="font-size:11px; font-weight:600; opacity:0.85; margin-top:8px;">{subtitle}</div>' if subtitle else ''
+    odo_html = f'<div class="odo-container">{"".join(digits_html)}</div>'
 
-    info_html = render_info_btn(info_tooltip, title=label)
+    if label is None:
+        return odo_html
 
+    tooltip_html = render_info_tooltip(info_tooltip)
+    sub_html = f'<div style="font-size:11px; font-weight:600; opacity:0.85; min-height:28px; line-height:1.25; display:flex; align-items:center;">{subtitle}</div>' if subtitle else '<div style="min-height:28px;"></div>'
     return f"""
-    <div class="bento-{theme}" style="min-height:140px; display:flex; flex-direction:column; justify-content:space-between; box-sizing:border-box;">
+    <div class="bento-{theme}" style="height:145px; min-height:145px; max-height:145px; padding:16px 20px; display:flex; flex-direction:column; justify-content:space-between; box-sizing:border-box; margin-bottom:0px;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">{label}</span>
-            <div style="display:flex; align-items:center; gap:6px;">
-                {info_html}
-                <span class="arrow-circle">↗</span>
+            <div style="display:flex; align-items:center; gap:4px;">
+                <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">{label}</span>
+                {tooltip_html}
             </div>
+            <span class="arrow-circle">↗</span>
         </div>
-        <div style="margin: 10px 0 4px 0;">
-            {odo_bar}
+        <div style="margin: 6px 0 4px 0;">
+            {odo_html}
         </div>
         {sub_html}
     </div>
     """
+
+
+def render_kpi_card(value_str: str, label: str, subtitle: str = "", theme: str = "mint", tooltip: str = "") -> str:
+    """Helper to render a Bento KPI Card with 3D mechanical odometer and inline CSS tooltip."""
+    return render_odometer_score(value_str, label=label, subtitle=subtitle, theme=theme, info_tooltip=tooltip)
 
 
 def render_bento_grid_results(run_data: Dict[str, Any]):
@@ -904,6 +1043,11 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
     df_clustered = run_data["df_clustered"]
     exec_summary = run_data["exec_summary"]
     metrics = run_data["metrics"]
+
+    # Guarantee session state persistence for inspector dialog
+    st.session_state.df_clustered = df_clustered
+    st.session_state.df_mood = df_mood
+    st.session_state.exec_summary = exec_summary
 
     total_c = metrics["total"]
     weighted_pos = metrics["weighted_approval"]
@@ -915,14 +1059,18 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
     v_title = run_data.get("video_title", run_data.get("url_or_title", "Video Analysis"))
     c_title = run_data.get("channel_title", "")
 
-    # Ensure topic columns exist
-    if "topic_name" not in df_clustered.columns:
-        df_clustered["topic_name"] = df_clustered.get("topic_label", "General Discussion")
+    # Ensure topic columns exist dynamically directly from clustered dataframe
+    target_clustered = st.session_state.get("df_clustered", df_clustered)
+    if target_clustered is None or target_clustered.empty:
+        target_clustered = df_clustered
 
-    topic_counts = df_clustered["topic_name"].value_counts().reset_index()
+    if "topic_name" not in target_clustered.columns:
+        target_clustered["topic_name"] = target_clustered.get("topic_label", "Miscellaneous / Outliers")
+
+    topic_counts = target_clustered["topic_name"].value_counts().reset_index()
     topic_counts.columns = ["Topic", "Count"]
     # Filter out quarantined from top topics display
-    topic_counts = topic_counts[~topic_counts["Topic"].str.contains("Quarantin")]
+    topic_counts = topic_counts[~topic_counts["Topic"].astype(str).str.contains("Quarantin", case=False, na=False)]
 
     pos_mask = df_mood["mood"].astype(str).str.contains("Positive")
     total_pos_count = int(pos_mask.sum())
@@ -933,13 +1081,7 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
 
     # Open Modal Dialog if triggered by any Inspect button
     if st.session_state.get("inspector_open"):
-        target_modal_data = df_clustered if "topic_name" in df_clustered.columns else df_mood
-        render_inspector_dialog(
-            target_modal_data,
-            st.session_state.get("inspector_title", "Score Evidence & Comment Inspector"),
-            st.session_state.get("inspector_filter_type", "ALL"),
-            st.session_state.get("inspector_filter_val", None),
-        )
+        render_inspector_dialog()
 
     left_zone, right_zone = st.columns([2.15, 1.05], gap="large")
 
@@ -949,15 +1091,15 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
         act_c1, act_c2 = st.columns(2, gap="medium")
 
         with act_c1:
-            st.markdown(render_odometer_score(
+            st.markdown(render_kpi_card(
                 f"{weighted_pos:.1f}%",
                 "Audience Hype",
                 f"Dominant: {dom_mood}",
                 theme="mint",
-                info_tooltip="Audience Hype (Approval Score): Percentage of total community engagement expressing positive excitement, viral praise, or appreciation, log-weighted by like count (W = log10(Likes + 1) + 1). Comments with thousands of likes carry proportionally higher weight."
+                tooltip="Percentage of positive community hype, log-weighted by likes."
             ), unsafe_allow_html=True)
             st.button(
-                f"Inspect {total_pos_count} Hype Comments ↗",
+                "Inspect ↗",
                 key=f"drill_pos_{run_data['id']}",
                 use_container_width=True,
                 on_click=trigger_inspector,
@@ -965,45 +1107,35 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
             )
 
         with act_c2:
-            st.markdown(render_odometer_score(
+            st.markdown(render_kpi_card(
                 f"{toxic_c}",
                 "Moderation Shield",
                 f"{sarcasm_c} Sarcastic | {toxic_c} Quarantined",
                 theme="pink",
-                info_tooltip="Moderation Shield: Hostile comments, abusive language, and personal harassment isolated and quarantined from topic clustering to preserve constructive audience intelligence. Trolling and sarcasm are monitored separately."
+                tooltip="Hostile comments, abusive language, and personal harassment isolated and quarantined."
             ), unsafe_allow_html=True)
-            m_col1, m_col2 = st.columns(2)
-            with m_col1:
-                st.button(
-                    f"Inspect {sarcasm_c} Sarcastic ↗",
-                    key=f"drill_sarc_{run_data['id']}",
-                    use_container_width=True,
-                    on_click=trigger_inspector,
-                    args=(f"Sarcastic & Trolling Comments ({sarcasm_c})", "SARCASM", None),
-                )
-            with m_col2:
-                st.button(
-                    f"Inspect {toxic_c} Toxic ↗",
-                    key=f"drill_tox_{run_data['id']}",
-                    use_container_width=True,
-                    on_click=trigger_inspector,
-                    args=(f"Toxic & Abusive Quarantined ({toxic_c})", "TOXIC", None),
-                )
+            st.button(
+                "Inspect ↗",
+                key=f"drill_tox_{run_data['id']}",
+                use_container_width=True,
+                on_click=trigger_inspector,
+                args=(f"Moderation Shield & Toxic Quarantined ({toxic_c})", "TOXIC", None),
+            )
 
         st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
         st.markdown("<div style='font-size:14px; font-weight:700; color:#64748B; margin-bottom:10px;'>Semantic Progress</div>", unsafe_allow_html=True)
 
         kpi_c1, kpi_c2, kpi_c3 = st.columns(3, gap="medium")
         with kpi_c1:
-            st.markdown(render_odometer_score(
+            st.markdown(render_kpi_card(
                 f"{total_c:,}",
                 "Analyzed",
                 "Total Dataset Comments",
                 theme="mint",
-                info_tooltip="Analyzed Dataset: Total count of raw YouTube comments fetched, sanitized, normalized from Hinglish emojis/slang, and classified across all 4 sentiment categories."
+                tooltip="Total count of raw comments fetched, sanitized, and classified."
             ), unsafe_allow_html=True)
             st.button(
-                f"Inspect All {total_c:,} ↗",
+                "Inspect ↗",
                 key=f"drill_all_{run_data['id']}",
                 use_container_width=True,
                 on_click=trigger_inspector,
@@ -1011,15 +1143,15 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
             )
 
         with kpi_c2:
-            st.markdown(render_odometer_score(
+            st.markdown(render_kpi_card(
                 f"{weighted_pos:.0f}%",
                 "Weighted Score",
                 "Log10 Weighted Approval",
                 theme="yellow",
-                info_tooltip="Log10 Weighted Approval: Mathematical score (Sum W_pos / Sum W_total * 100). Ensures high-engagement comments with 10,000+ likes have greater influence than 0-like noise."
+                tooltip="Log10 Weighted Approval: (Sum W_pos / Sum W_total * 100)."
             ), unsafe_allow_html=True)
             st.button(
-                f"Inspect Top Weighted ↗",
+                "Inspect ↗",
                 key=f"drill_weight_{run_data['id']}",
                 use_container_width=True,
                 on_click=trigger_inspector,
@@ -1027,15 +1159,15 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
             )
 
         with kpi_c3:
-            st.markdown(render_odometer_score(
+            st.markdown(render_kpi_card(
                 f"{num_topics}",
                 "Active Topics",
                 "Discovered Clusters",
                 theme="purple",
-                info_tooltip="Active Semantic Topics: The number of distinct thematic conversation clusters discovered among constructive comments using IndicSBERT sentence embeddings and semantic clustering."
+                tooltip="Distinct thematic conversation clusters discovered via IndicSBERT sentence embeddings."
             ), unsafe_allow_html=True)
             st.button(
-                f"Inspect All Topics ↗",
+                "Inspect ↗",
                 key=f"drill_topics_{run_data['id']}",
                 use_container_width=True,
                 on_click=trigger_inspector,
@@ -1058,7 +1190,10 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
         """)
 
         with st.container(border=True):
-            st.markdown(exec_summary, unsafe_allow_html=True)
+            if st.session_state.exec_summary:
+                st.markdown(st.session_state.exec_summary)  # Renders bullet points correctly!
+            else:
+                st.info("Awaiting Gemini Synthesis...")
 
             active_gem_key = get_gemini_api_key()
             st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
@@ -1088,26 +1223,28 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
                         with st.spinner("Synthesizing live Gemini 2.5 Flash creator briefing..."):
                             new_summary = generate_executive_summary(df_clustered, target_key, video_title=v_title, channel_title=c_title)
                             run_data["exec_summary"] = new_summary
+                            st.session_state.exec_summary = new_summary
                             st.success("Executive action synthesis refreshed via Google Gemini 2.5 Flash!")
                             st.rerun()
 
     # ── RIGHT ZONE ─────────────────────────────────────────────
     with right_zone:
-        pulse_info = render_info_btn(
-            "Pulse Score (0-10): Overall health score of audience reception. 8.5-10 = Viral Hype & Strong Community Praise; 7.0-8.4 = Strongly Positive; 5.0-6.9 = Mixed; <5.0 = Critical Friction.",
-            title="Community Sentiment Pulse"
+        pulse_info = render_info_tooltip(
+            "Pulse Score (0-10): Overall health score of audience reception. 8.5-10 = Viral Hype & Strong Community Praise; 7.0-8.4 = Strongly Positive; 5.0-6.9 = Mixed; <5.0 = Critical Friction."
         )
         st.markdown(f"""
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <span style="font-size:14px; font-weight:700; color:#64748B;">Community Sentiment Pulse</span>
-            {pulse_info}
+            <div style="display:flex; align-items:center; gap:4px;">
+                <span style="font-size:14px; font-weight:700; color:#64748B;">Community Sentiment Pulse</span>
+                {pulse_info}
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
         with st.container(border=True):
             st.markdown("<div style='font-size:13px; font-weight:700; color:#1E293B;'>Radial Speedometer Gauge</div>", unsafe_allow_html=True)
             fig_gauge = charts.pulse_gauge_chart(pulse_score, colorblind_safe=st.session_state.colorblind_mode)
-            st.plotly_chart(fig_gauge, use_container_width=True, theme=None)
+            st.plotly_chart(fig_gauge, use_container_width=True, config={'displayModeBar': False})
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
         st.markdown("<div style='font-size:14px; font-weight:700; color:#64748B; margin-bottom:10px;'>Mood Distribution</div>", unsafe_allow_html=True)
@@ -1115,17 +1252,18 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
         with st.container(border=True):
             st.markdown("<div style='font-size:13px; font-weight:700; color:#1E293B;'>Engagement-Weighted Breakdown</div>", unsafe_allow_html=True)
             fig_pie = charts.mood_donut_chart(df_mood, colorblind_safe=st.session_state.colorblind_mode)
-            st.plotly_chart(fig_pie, use_container_width=True, theme=None)
+            st.plotly_chart(fig_pie, use_container_width=True, config={'displayModeBar': False})
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-        clusters_info = render_info_btn(
-            "Semantic Topic Clusters: Distinct thematic conversation themes discovered across comments using IndicSBERT embeddings. Click 'Inspect' on any cluster to view its underlying comments in the inspector below.",
-            title="Top Semantic Clusters"
+        clusters_info = render_info_tooltip(
+            "Semantic Topic Clusters: Distinct thematic conversation themes discovered across comments using IndicSBERT embeddings."
         )
         st.markdown(f"""
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <span style="font-size:14px; font-weight:700; color:#64748B;">Top Semantic Clusters</span>
-            {clusters_info}
+            <div style="display:flex; align-items:center; gap:4px;">
+                <span style="font-size:14px; font-weight:700; color:#64748B;">Top Semantic Clusters</span>
+                {clusters_info}
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1153,7 +1291,7 @@ def render_bento_grid_results(run_data: Dict[str, Any]):
             """, unsafe_allow_html=True)
             st.button(
                 f"Inspect {row['Count']} Comments ↗",
-                key=f"topic_drill_{idx}_{run_data['id']}",
+                key=f"topic_btn_{idx}_{run_data['id']}",
                 use_container_width=True,
                 on_click=trigger_inspector,
                 args=(f"Topic Cluster: {row['Topic']}", "TOPIC", row['Topic']),
@@ -1566,105 +1704,71 @@ elif st.session_state.active_page == "Dashboard":
         cum_sarcasm = int(all_moods["mood"].astype(str).str.contains("Sarcastic").sum())
         cum_toxic = int(all_moods["mood"].astype(str).str.contains("Toxic").sum())
 
+        # Guarantee persistent session state for Dashboard inspector
+        st.session_state.df_clustered = all_topics
+        st.session_state.df_mood = all_moods
+
         # Open Modal Dialog if triggered on Dashboard
         if st.session_state.get("inspector_open"):
-            render_inspector_dialog(
-                all_topics,
-                st.session_state.get("inspector_title", "Score Evidence & Comment Inspector"),
-                st.session_state.get("inspector_filter_type", "ALL"),
-                st.session_state.get("inspector_filter_val", None),
-            )
+            render_inspector_dialog()
 
         # Row 1: 4 Cumulative Pastel Bento KPIs
         k1, k2, k3, k4 = st.columns(4)
         with k1:
-            i_k1 = render_info_btn("Total Ingested Datasets: Number of YouTube videos or CSV uploads analyzed across all user sessions.", title="Total Datasets")
-            st.markdown(f"""
-            <div class="bento-mint">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Total Datasets</span>
-                    {i_k1}
-                </div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:8px;">
-                    <span style="font-size:32px; font-weight:800;">{cum_links}</span>
-                    <span class="pill-badge">{cum_comments} Comments</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_kpi_card(
+                f"{cum_links}",
+                "Total Datasets",
+                f"{cum_comments:,} Comments",
+                theme="mint",
+                tooltip="Number of YouTube videos or CSV uploads analyzed across all user sessions."
+            ), unsafe_allow_html=True)
             st.button(
-                f"Inspect All {cum_comments:,} ↗",
+                "Inspect ↗",
                 key="dash_inspect_all",
                 use_container_width=True,
                 on_click=trigger_inspector,
                 args=(f"All Aggregated Comments ({cum_comments:,})", "ALL", None),
             )
         with k2:
-            i_k2 = render_info_btn("Overall Approval Score: Log-weighted sentiment ratio across all analyzed videos. Ensures viral comments with 10,000+ likes carry proportional weight.", title="Overall Approval")
-            st.markdown(f"""
-            <div class="bento-yellow">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Overall Approval</span>
-                    <div style="display:flex; align-items:center; gap:6px;">
-                        {i_k2}
-                        <span class="arrow-circle">↗</span>
-                    </div>
-                </div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:8px;">
-                    <span style="font-size:32px; font-weight:800;">{cum_weighted_pos:.1f}%</span>
-                    <span class="pill-badge">Log₁₀ Weighted</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_kpi_card(
+                f"{cum_weighted_pos:.1f}%",
+                "Overall Approval",
+                "Log₁₀ Weighted",
+                theme="yellow",
+                tooltip="Percentage of positive community hype, log-weighted by likes."
+            ), unsafe_allow_html=True)
             st.button(
-                "Inspect Hype Comments ↗",
+                "Inspect ↗",
                 key="dash_inspect_pos",
                 use_container_width=True,
                 on_click=trigger_inspector,
                 args=("Aggregated Positive Hype Comments", "MOOD", "Positive"),
             )
         with k3:
-            i_k3 = render_info_btn("Sarcasm & Irony: Total comments identified with mock praise, sarcasm emojis, or irony patterns across all datasets.", title="Sarcasm Caught")
-            st.markdown(f"""
-            <div class="bento-purple">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Sarcasm Caught</span>
-                    <div style="display:flex; align-items:center; gap:6px;">
-                        {i_k3}
-                        <span class="arrow-circle">↗</span>
-                    </div>
-                </div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:8px;">
-                    <span style="font-size:32px; font-weight:800;">{cum_sarcasm}</span>
-                    <span class="pill-badge">Detected Irony</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_kpi_card(
+                f"{cum_sarcasm:,}",
+                "Sarcasm Caught",
+                "Detected Irony",
+                theme="purple",
+                tooltip="Total comments identified with mock praise, sarcasm emojis, or irony patterns across all datasets."
+            ), unsafe_allow_html=True)
             st.button(
-                f"Inspect {cum_sarcasm} Sarcasm ↗",
+                "Inspect ↗",
                 key="dash_inspect_sarc",
                 use_container_width=True,
                 on_click=trigger_inspector,
                 args=(f"Aggregated Sarcastic Comments ({cum_sarcasm})", "SARCASM", None),
             )
         with k4:
-            i_k4 = render_info_btn("Quarantined Toxic: Total abusive, hateful, or hostile comments filtered out across all analyzed datasets to safeguard community intelligence.", title="Quarantined Toxic")
-            st.markdown(f"""
-            <div class="bento-pink">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Quarantined Toxic</span>
-                    <div style="display:flex; align-items:center; gap:6px;">
-                        {i_k4}
-                        <span class="arrow-circle">↗</span>
-                    </div>
-                </div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:8px;">
-                    <span style="font-size:32px; font-weight:800;">{cum_toxic}</span>
-                    <span class="pill-badge">Isolated Abusive</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_kpi_card(
+                f"{cum_toxic:,}",
+                "Quarantined Toxic",
+                "Isolated Abusive",
+                theme="pink",
+                tooltip="Hostile comments, abusive language, and personal harassment isolated and quarantined across all datasets."
+            ), unsafe_allow_html=True)
             st.button(
-                f"Inspect {cum_toxic} Toxic ↗",
+                "Inspect ↗",
                 key="dash_inspect_tox",
                 use_container_width=True,
                 on_click=trigger_inspector,
@@ -1706,19 +1810,24 @@ elif st.session_state.active_page == "Dashboard":
                     xaxis=dict(showgrid=True, gridcolor="#EAEEF4", tickfont=dict(family="Plus Jakarta Sans", size=11)),
                     yaxis=dict(tickfont=dict(family="Plus Jakarta Sans", size=11)),
                 )
-                st.plotly_chart(fig_bar, use_container_width=True, theme=None)
+                st.plotly_chart(fig_bar, use_container_width=True, config={'displayModeBar': False})
 
             # Combined Latest Gemini Executive Insights
             with st.container(border=True):
                 st.markdown("<div style='font-size:14px; font-weight:800; color:#1E293B; margin-bottom:10px;'>Latest Strategic Executive Synthesis</div>", unsafe_allow_html=True)
-                st.markdown(st.session_state.analysis_history[0]["exec_summary"], unsafe_allow_html=True)
+                if st.session_state.analysis_history and st.session_state.analysis_history[0].get("exec_summary"):
+                    st.markdown(st.session_state.analysis_history[0]["exec_summary"])
+                elif st.session_state.get("exec_summary"):
+                    st.markdown(st.session_state.exec_summary)
+                else:
+                    st.info("Awaiting Gemini Synthesis...")
 
         with dash_right:
             # Cumulative Mood Donut
             with st.container(border=True):
                 st.markdown("<div style='font-size:14px; font-weight:800; color:#1E293B;'>Cumulative Mood Distribution</div>", unsafe_allow_html=True)
                 fig_pie_cum = charts.mood_donut_chart(all_moods, colorblind_safe=st.session_state.colorblind_mode)
-                st.plotly_chart(fig_pie_cum, use_container_width=True, theme=None)
+                st.plotly_chart(fig_pie_cum, use_container_width=True, config={'displayModeBar': False})
 
             # Top Recurring Topic Clusters
             st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
@@ -1741,6 +1850,13 @@ elif st.session_state.active_page == "Dashboard":
                         <span class="pill-badge">{row['Count']} comments</span>
                     </div>
                     """, unsafe_allow_html=True)
+                    st.button(
+                        f"Inspect {row['Count']} Comments ↗",
+                        key=f"dash_topic_btn_{idx}",
+                        use_container_width=True,
+                        on_click=trigger_inspector,
+                        args=(f"Topic Cluster: {row['Topic']}", "TOPIC", row['Topic']),
+                    )
 
 
 # ===============================================================
@@ -1797,7 +1913,11 @@ elif st.session_state.active_page == "History":
                         with st.spinner("Refreshing commentary from source..."):
                             target_c = item.get("metrics", {}).get("total", 300)
                             if item["platform"] == "YouTube" and os.getenv("YOUTUBE_API_KEY"):
-                                refreshed_df = fetch_youtube_comments(item["url_or_title"], os.getenv("YOUTUBE_API_KEY"), max_comments=target_c)
+                                refreshed_res = fetch_youtube_comments(item["url_or_title"], os.getenv("YOUTUBE_API_KEY"), max_comments=target_c)
+                                if isinstance(refreshed_res, tuple):
+                                    refreshed_df, _ = refreshed_res
+                                else:
+                                    refreshed_df = refreshed_res
                             else:
                                 refreshed_df = item["df_mood"]
                             
@@ -1818,6 +1938,7 @@ elif st.session_state.active_page == "History":
                             item["df_mood"] = df_mood
                             item["df_clustered"] = df_clust
                             item["exec_summary"] = summary_text
+                            st.session_state.exec_summary = summary_text
                             item["metrics"] = {
                                 "total": tot,
                                 "weighted_approval": w_pos,
@@ -1846,7 +1967,11 @@ elif st.session_state.active_page == "History":
                     with st.spinner("Re-fetching comments..."):
                         target_c = selected_run.get("metrics", {}).get("total", 300)
                         if selected_run["platform"] == "YouTube" and os.getenv("YOUTUBE_API_KEY"):
-                            refreshed_df = fetch_youtube_comments(selected_run["url_or_title"], os.getenv("YOUTUBE_API_KEY"), max_comments=target_c)
+                            refreshed_res = fetch_youtube_comments(selected_run["url_or_title"], os.getenv("YOUTUBE_API_KEY"), max_comments=target_c)
+                            if isinstance(refreshed_res, tuple):
+                                refreshed_df, _ = refreshed_res
+                            else:
+                                refreshed_df = refreshed_res
                         else:
                             refreshed_df = selected_run["df_mood"]
                         

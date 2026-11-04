@@ -50,56 +50,27 @@ HINGLISH_STOPWORDS = {
 def format_topic_label(words: List[str], max_words: int = 3) -> str:
     """
     Convert raw BERTopic / n-gram keyword strings into clean, human-readable titles.
-    Guarantees clean casing and prevents repetitive or overlapping topic titles.
+    Strictly dynamic: extracts the top 3 substantive words with title casing. NO hardcoded strings.
     """
     filtered = []
+    noise_words = {
+        "for", "and", "with", "the", "this", "that", "from", "have", "were", "they",
+        "will", "been", "about", "your", "what", "when", "where", "which", "there",
+        "their", "then", "them", "some", "more", "also", "just", "like", "very"
+    }
     for w in words:
         clean = re.sub(r"^\d+_", "", str(w)).strip().lower()
-        clean = re.sub(r"[^\w\s]", "", clean)
-        if clean and clean not in HINGLISH_STOPWORDS and len(clean) > 2:
-            if clean in ["stan", "mc"]:
-                filtered.append("MC Stan")
-            elif clean == "prakhar":
-                filtered.append("Prakhar")
-            elif clean in ["cypher", "cyphers"]:
-                filtered.append("Cypher")
-            elif clean in ["hiphop", "hip-hop"]:
-                filtered.append("Hip-Hop")
-            elif clean == "bigg":
-                filtered.append("Bigg Boss")
-            elif clean == "aujla":
-                filtered.append("Karan Aujla")
-            elif clean == "samay":
-                filtered.append("Samay Raina")
-            elif clean == "tanmay":
-                filtered.append("Tanmay Bhat")
-            elif clean == "scene":
-                filtered.append('"Kya Scene"')
-            elif clean == "wavy":
-                filtered.append("Wavy Vibe")
-            elif clean == "mahol":
-                filtered.append("Mahol & Energy")
-            elif clean == "kamzoriya":
-                filtered.append("Kamzoriya Humour")
-            elif clean in ["hilarious", "comedy", "funny"]:
-                filtered.append("Viral Comedy")
-            else:
-                filtered.append(clean.title())
-        # Deduplicate while preserving order
-        deduped = list(dict.fromkeys(filtered))
-        if len(deduped) >= max_words:
-            filtered = deduped
-            break
+        clean = re.sub(r"[^\w\s]", "", clean).strip()
+        if clean and clean not in HINGLISH_STOPWORDS and clean not in noise_words and len(clean) > 2:
+            filtered.append(clean.title())
+            if len(filtered) >= max_words:
+                break
 
+    # Deduplicate while preserving order
     deduped = list(dict.fromkeys(filtered))
     if not deduped:
-        return "Key Audience Discussion"
-    if len(deduped) == 1:
-        return f"{deduped[0]} Discussion"
-    elif len(deduped) == 2:
-        return f"{deduped[0]} & {deduped[1]}"
-    else:
-        return f"{deduped[0]}, {deduped[1]} & {deduped[2]}"
+        return "Miscellaneous / Outliers"
+    return ", ".join(deduped[:max_words]).title()
 
 
 # ──────────────────────────────────────────────
@@ -220,8 +191,8 @@ def build_topic_model(
     )
 
     vectorizer = CountVectorizer(
+        stop_words="english",
         ngram_range=(1, 2),
-        stop_words=list(HINGLISH_STOPWORDS),
         min_df=2,
     )
 
@@ -240,150 +211,123 @@ def build_topic_model(
 
 def _fallback_keyword_clustering(df_constructive: pd.DataFrame, top_n_words: int = 8) -> Tuple[pd.DataFrame, Any, Dict]:
     """
-    Data-driven heuristic clustering engine.
-    Extracts real salient terms from constructive comments so discovered topics strictly
-    reflect actual video content (e.g. guest names, show anthems, comedy moments, performances),
-    avoiding redundant permutation labels and preventing the 74% unclustered dump.
+    Data-driven dynamic semantic keyword clustering engine.
+    Extracts actual high-frequency tokens and co-occurring terms dynamically from comments.
+    Guarantees ZERO hardcoded topics.
     """
-    # 1. Extract video metadata to avoid redundant host/guest entity stopwords
+    if df_constructive.empty:
+        df_out = df_constructive.copy()
+        df_out["topic_id"] = -1
+        df_out["topic_label"] = "Miscellaneous / Outliers"
+        df_out["topic_name"] = "Miscellaneous / Outliers"
+        return df_out, None, {}
+
+    # 1. Extract video metadata to avoid redundant channel/video stopwords
     v_title = str(df_constructive.attrs.get("video_title", "")).lower()
     c_title = str(df_constructive.attrs.get("channel_title", "")).lower()
     meta_clean = re.sub(r"[^\w\s]", " ", f"{v_title} {c_title}")
     video_stopwords = set(meta_clean.split()) | {
         "video", "videos", "episode", "ep", "clip", "show", "watch", "watching",
         "channel", "podcast", "creator", "part", "season", "yt", "youtube", "full",
-        "comments", "comment", "latent", "s2", "ep4", "india", "indias"
+        "comments", "comment"
+    }
+    noise_words = {
+        "for", "and", "with", "the", "this", "that", "from", "have", "were", "they",
+        "will", "been", "about", "your", "what", "when", "where", "which", "there",
+        "their", "then", "them", "some", "more", "also", "just", "like", "very"
     }
 
     # 2. Extract substantive tokens from comments
+    comment_token_lists = []
     all_tokens = []
-    comment_token_sets = []
-    for text in df_constructive.get("text_for_topic", df_constructive["text"]):
+    raw_texts = df_constructive.get("raw_text", df_constructive["text"]).tolist()
+    for text in raw_texts:
         t_clean = re.sub(r"[^\w\s]", " ", str(text).lower())
-        tokens = [w for w in t_clean.split() if len(w) > 2 and w not in HINGLISH_STOPWORDS and w not in video_stopwords]
-        comment_token_sets.append(set(tokens))
+        tokens = [w for w in t_clean.split() if len(w) > 2 and w not in HINGLISH_STOPWORDS and w not in video_stopwords and w not in noise_words]
+        comment_token_lists.append(tokens)
         all_tokens.extend(tokens)
 
     counts = Counter(all_tokens)
+    frequent_words = [w for w, c in counts.most_common(25) if c >= 2]
 
-    # 3. Define standard Indian entertainment & YouTube thematic discovery buckets
-    THEMATIC_BUCKETS = [
-        {
+    # 3. Discover dynamic clusters around the top distinct substantive terms
+    clusters = []
+    used_words = set()
+    for anchor in frequent_words:
+        if anchor in used_words:
+            continue
+        # Find co-occurring terms in comments containing anchor
+        co_counts = Counter()
+        for tokens in comment_token_lists:
+            if anchor in tokens:
+                for w in tokens:
+                    if w != anchor and w not in used_words:
+                        co_counts[w] += 1
+
+        top_co = [w for w, _ in co_counts.most_common(2)]
+        cluster_words = [anchor] + top_co
+        dynamic_label = ", ".join([w.title() for w in cluster_words[:3]])
+        clusters.append({
+            "id": len(clusters),
+            "anchor": anchor,
+            "words": cluster_words,
+            "label": dynamic_label,
+        })
+        used_words.update(cluster_words)
+        if len(clusters) >= 4:
+            break
+
+    if not clusters:
+        # Fallback to single general discussion if comment sample is very sparse
+        clusters.append({
             "id": 0,
-            "label": 'Show Anthems & "Kya Scene Hai"',
-            "keywords": {"wavy", "scene", "mahol", "anthem", "vibe", "vibes", "swag", "energy", "banger", "fire", "music", "beat", "song", "track", "entry", "intro", "hook"},
-            "phrases": ["kya scene", "oye hoye", "mahol pura", "god level"],
-            "tags": {"[dance_celebration]", "[fire_hype]", "💃", "🕺", "🔥", "⚡"},
-        },
-        {
-            "id": 1,
-            "label": "Viral Comedy & Unhinged Roasts",
-            "keywords": {"hilarious", "funny", "laugh", "laughing", "laughter", "jokes", "joke", "roast", "roasting", "punchline", "comedy", "dead", "unhinged", "hasi", "has", "lol", "lmao", "rofl", "crying", "standup", "comic", "kamzoriya", "kamzori"},
-            "phrases": ["pet dard", "has has", "haste haste", "unhinged"],
-            "tags": {"[laughing_hard]", "[dead_hilarious]", "😂", "🤣", "💀", "☠️"},
-        },
-        {
-            "id": 2,
-            "label": "Guest Dynamics & Panel Chemistry",
-            "keywords": {"celebrities", "celebrity", "chemistry", "bonding", "reaction", "reactions", "aura", "humble", "attitude", "judges", "judging", "panel", "brotherhood", "respect", "presence", "duo", "dynamic", "trio", "personality", "conversation", "talk", "legend", "king", "goat"},
-            "phrases": ["treated as celebrities", "pure gold", "dil jeet", "vibe check"],
-            "tags": {"[stone_gigachad]", "[cool_confident]", "👑", "❤️"},
-        },
-        {
-            "id": 3,
-            "label": "Contestant Acts & Stage Performances",
-            "keywords": {"talent", "act", "acts", "performer", "performance", "contestant", "contestants", "stage", "audition", "round", "score", "points", "skills", "magic", "singing", "dance", "participants", "attempt", "singer"},
-            "phrases": ["got latent", "on stage", "real talent"],
-            "tags": {"[clapping_praise]", "[star_talent]", "👏", "✨"},
-        },
-    ]
+            "anchor": "discussion",
+            "words": ["community", "discussion"],
+            "label": "Community Discussion",
+        })
 
-    # Check if this video is non-entertainment (e.g. tech, educational, review, gaming)
-    top_candidates = [word for word, cnt in counts.most_common(12) if cnt >= 3 and word not in video_stopwords]
-    used_labels = set()
-    active_buckets = []
-    for b in THEMATIC_BUCKETS:
-        active_buckets.append(b)
-        used_labels.add(b["label"])
-
-    # If domain keywords exist (e.g., 'camera', 'battery', 'price', 'lyrics') that don't match entertainment, add domain bucket
-    domain_candidates = [w for w in top_candidates if not any(w in b["keywords"] for b in THEMATIC_BUCKETS)]
-    if len(domain_candidates) >= 2:
-        extra_bucket = {
-            "id": len(active_buckets),
-            "label": format_topic_label(domain_candidates[:3]),
-            "keywords": set(domain_candidates[:6]),
-            "phrases": [],
-            "tags": set(),
-        }
-        active_buckets.append(extra_bucket)
-
-    # 4. Assign comments to best-matching cluster via weighted scoring
+    # 4. Assign comments to best-matching dynamic cluster
     assigned_topics = []
-    raw_texts = df_constructive.get("raw_text", df_constructive["text"]).tolist()
+    for tokens in comment_token_lists:
+        best_c = -1
+        best_score = 0
+        token_set = set(tokens)
+        for c in clusters:
+            score = len(token_set.intersection(c["words"]))
+            if score > best_score:
+                best_score = score
+                best_c = c["id"]
 
-    for idx, (tokens, raw_t) in enumerate(zip(comment_token_sets, raw_texts)):
-        t_lower = str(raw_t).lower()
-        scores = [0.0] * len(active_buckets)
-
-        for b_idx, bucket in enumerate(active_buckets):
-            # Keyword match
-            for kw in bucket["keywords"]:
-                if kw in tokens or kw in t_lower:
-                    scores[b_idx] += 3.0
-            # Phrase match
-            for phr in bucket["phrases"]:
-                if phr in t_lower:
-                    scores[b_idx] += 4.5
-            # Tag / Emoji match
-            for tg in bucket["tags"]:
-                if tg in t_lower or tg in raw_t:
-                    scores[b_idx] += 2.5
-
-        max_score = max(scores) if scores else 0.0
-        if max_score > 0:
-            assigned_topics.append(scores.index(max_score))
+        if best_score > 0:
+            assigned_topics.append(best_c)
         else:
-            # Soft assignment: If comment has substantive length (> 20 chars), assign cyclically or to Comedy/General
-            if len(t_lower) > 25:
-                # Distribute constructively across the top 2 active entertainment buckets
-                assigned_topics.append(idx % min(3, len(active_buckets)))
-            else:
-                # Brief / uninformative noise goes to General Discussion
-                assigned_topics.append(-1)
+            assigned_topics.append(-1)
 
+    df_constructive = df_constructive.copy()
     df_constructive["topic_id"] = assigned_topics
-    topic_label_map = {b["id"]: b["label"] for b in active_buckets}
-    topic_label_map[-1] = "Community Feedback & General Discussion"
-    df_constructive["topic_label"] = df_constructive["topic_id"].map(lambda x: topic_label_map.get(x, "Community Feedback & General Discussion"))
+    topic_label_map = {c["id"]: c["label"] for c in clusters}
+    topic_label_map[-1] = "Miscellaneous / Outliers"
+    df_constructive["topic_label"] = df_constructive["topic_id"].map(lambda x: topic_label_map.get(x, "Miscellaneous / Outliers"))
+    df_constructive["topic_name"] = df_constructive["topic_label"]
 
     # 5. Build rich topic summary with top representative comments
     topic_summary = {}
-    for tid_raw in sorted(df_constructive["topic_id"].unique()):
-        tid = int(tid_raw)
-        if tid == -1 and len(df_constructive["topic_id"].unique()) > 1:
+    for c in clusters:
+        tid = c["id"]
+        cluster_df = df_constructive[df_constructive["topic_id"] == tid]
+        if cluster_df.empty:
             continue
-        cluster = df_constructive[df_constructive["topic_id"] == tid_raw].copy()
-        if cluster.empty:
-            continue
-        if "engagement_weight" in cluster.columns:
-            cluster = cluster.sort_values("engagement_weight", ascending=False)
+        if "engagement_weight" in cluster_df.columns:
+            cluster_df = cluster_df.sort_values("engagement_weight", ascending=False)
         else:
-            cluster = cluster.sort_values("like_count", ascending=False)
-
-        top_words = list(active_buckets[tid]["keywords"])[:top_n_words] if (0 <= tid < len(active_buckets)) else ["discussion", "community"]
-        rep_comments = (
-            cluster.head(5)[["text", "like_count", "mood_label"]].to_dict("records")
-            if "mood_label" in cluster.columns
-            else cluster.head(5)[["text", "like_count"]].to_dict("records")
-        )
+            cluster_df = cluster_df.sort_values("like_count", ascending=False)
 
         topic_summary[tid] = {
-            "label": topic_label_map.get(tid, "Community Feedback & General Discussion"),
-            "size": int(len(cluster)),
-            "top_words": top_words,
-            "representative_comments": rep_comments,
-            "avg_engagement": float(cluster["engagement_weight"].mean()) if "engagement_weight" in cluster.columns else 1.0,
+            "label": c["label"],
+            "size": int(len(cluster_df)),
+            "top_words": c["words"],
+            "representative_comments": cluster_df.head(5)[["text", "like_count"]].to_dict("records"),
+            "avg_engagement": float(cluster_df["engagement_weight"].mean()) if "engagement_weight" in cluster_df.columns else 1.0,
         }
 
     return df_constructive, None, topic_summary
@@ -416,11 +360,18 @@ def cluster_topics(
 
     if len(df_constructive) < 5:
         logger.warning(f"Only {len(df_constructive)} constructive comments — too few to cluster.")
-        df["topic_id"] = -1
-        df["topic_label"] = "General Discussion"
-        return df, None, {}
+        df_out = df.copy()
+        df_out["topic_id"] = -1
+        df_out["topic_label"] = "Miscellaneous / Outliers"
+        df_out["topic_name"] = "Miscellaneous / Outliers"
+        return df_out, None, {}
 
-    texts = df_constructive["text_for_topic"].tolist()
+    if "text_for_topic" in df_constructive.columns:
+        texts = df_constructive["text_for_topic"].tolist()
+    elif "text" in df_constructive.columns:
+        texts = df_constructive["text"].tolist()
+    else:
+        texts = df_constructive.get("raw_text", pd.Series([""] * len(df_constructive))).tolist()
     n_constructive = len(df_constructive)
 
     # Adaptive min_topic_size scaling for 100 to 2,000 comments
@@ -465,15 +416,16 @@ def cluster_topics(
     for _, row in topic_info.iterrows():
         tid = row["Topic"]
         if tid == -1:
-            topic_label_map[-1] = "General Discussion"
+            topic_label_map[-1] = "Miscellaneous / Outliers"
             continue
         words = topic_model.get_topic(tid)
         raw_words = [w[0] for w in words] if words else [f"Topic {tid}"]
         topic_label_map[tid] = format_topic_label(raw_words)
 
     df_constructive["topic_label"] = df_constructive["topic_id"].map(
-        lambda x: topic_label_map.get(x, "General Discussion")
+        lambda x: topic_label_map.get(x, "Miscellaneous / Outliers")
     )
+    df_constructive["topic_name"] = df_constructive["topic_label"]
 
     # Build topic summary
     topic_summary = {}

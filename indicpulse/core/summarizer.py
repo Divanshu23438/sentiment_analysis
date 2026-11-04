@@ -9,7 +9,7 @@ Synthesizes deep, contextual audience insights using Google Gemini:
 
 ZERO generic templates. Strictly driven by real video title & comment text.
 Includes automatic dynamic model discovery via client.models.list(),
-multi-tier model fallbacks (gemini-2.0-flash, 1.5-flash-latest, 1.5-flash, 1.5-pro),
+multi-tier model fallbacks (gemini-2.5-flash, gemini-2.0-flash, 1.5-flash-latest, 1.5-flash),
 API version fallbacks (default, v1, v1beta), and robust JSON parsing.
 """
 
@@ -27,17 +27,13 @@ logger = logging.getLogger(__name__)
 
 # Canonical priority list of Gemini models
 PRIORITY_MODELS = [
+    "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemini-2.0-flash-exp",
     "gemini-1.5-flash",
     "gemini-1.5-flash-latest",
     "gemini-1.5-flash-001",
     "gemini-1.5-flash-002",
-    "gemini-1.5-pro",
-    "gemini-1.5-pro-latest",
-    "gemini-1.5-pro-001",
-    "gemini-1.5-pro-002",
-    "gemini-2.5-flash",
     "gemini-pro",
 ]
 
@@ -283,7 +279,7 @@ def generate_executive_summary(
         channel_title=c_title,
     )
 
-    candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     last_error = None
 
     # Step 1: Direct HTTP REST call (bulletproof against SDK / Vertex AI routing bugs)
@@ -383,10 +379,10 @@ def _fallback_summary(
 
     # Extract distinct topics
     topics = [info["label"] for tid, info in topic_summary.items() if tid != -1 and "quarantin" not in info.get("label", "").lower()]
-    topics_str = ", ".join(topics[:3]) if topics else "viral show anthems and comedy moments"
+    topics_str = ", ".join(topics[:3]) if topics else "core audience discussion themes"
 
     # Dynamic top highlight from the highest engaged comment
-    top_comment_text = "Key conversational segment"
+    top_comment_text = "Standout viewer comment"
     top_comment_likes = 0
     if not df_sorted.empty:
         top_row = df_sorted.iloc[0]
@@ -403,25 +399,25 @@ def _fallback_summary(
             "subject_summary": f"Audience engagement for '{video_title}' is overwhelmingly active, driven primarily by discussions around {topics_str}.",
             "overall_sentiment": "Strongly Positive (Viral Hype)" if score >= 7.5 else "Engaged & Mixed",
             "pulse_score": score,
-            "cultural_nuance": "Heavy usage of Hinglish code-mixing, regional Indian slang (e.g., 'wavy', 'mahol', 'kya scene hai'), and viral comedy references.",
+            "cultural_nuance": "Natural usage of Hinglish code-mixing and conversational community reactions.",
         },
         "what_viewers_loved": {
-            "summary": f"Viewers expressed immense excitement for {channel_title}'s guest dynamic, comedic pacing, and unscripted moments.",
+            "summary": f"Viewers expressed strong appreciation for {channel_title}'s delivery, pacing, and core highlights.",
             "quotes": pos_quotes or [f'"{top_comment_text}" ({top_comment_likes:,} likes)'],
             "top_praised_moment": f'"{top_comment_text[:60]}..." — standout highlight engaging over {top_comment_likes:,} likes.',
         },
         "criticisms_and_debates": {
-            "summary": "Viewer debates and banter centered around humorous roasting of guest personalities rather than technical production complaints.",
-            "quotes": crit_quotes or ['"celebrities not treated as celebrities 😂😂😂" (37,185 likes)'],
-            "key_controversy": "Humorous audience banter and contrasting opinions on contestant roast intensity and panel reactions.",
+            "summary": "Viewer feedback and debates centered around specific moments, pacing, and discussion topics.",
+            "quotes": crit_quotes or [f'"{top_comment_text}" ({top_comment_likes:,} likes)'],
+            "key_controversy": "Contrasting audience perspectives on key discussion points and video pacing.",
         },
         "viewer_requests_and_next_steps": {
-            "summary": "The community is actively requesting follow-up collaborations, extended cuts, and continuation of recurring segments.",
+            "summary": "The community is actively requesting follow-ups, deeper dives, and continuation of key themes.",
             "actionable_steps": [
-                f"Release an unedited / behind-the-scenes cut highlighting the top discussed moments around {topics[0] if topics else 'show anthems'}.",
-                "Pin an official comment celebrating the viral catchphrases created by the audience in this episode.",
-                "Incorporate audience-suggested guest combinations in the upcoming episode lineup.",
+                f"Release follow-up content or an extended deep-dive focusing on {topics[0] if topics else 'the primary topic'}.",
+                "Pin a community discussion comment engaging with top audience questions.",
+                "Incorporate requested talking points into upcoming releases.",
             ],
-            "top_request": "Audience demand for extended uncut conversations and recurring appearances.",
+            "top_request": "Audience demand for follow-up videos and extended explorations of the main topic.",
         },
     }

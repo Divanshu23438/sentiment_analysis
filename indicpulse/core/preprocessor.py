@@ -89,7 +89,7 @@ PROFANITY_PATTERNS = [
     (r"\bg[a@]and\b", "gaand", "medium"),
     (r"\bm[a@]d[e3]rch[o0]d\b", "madarchod", "high"),
     (r"\bbc\b(?!\s*(?:rap|battle|bhai))\b", "bhenchod", "high"),
-    (r"\bmc\b(?!\s*(?:stan|stanny|square|insaan|kash|kode|altaf|head|battle|rap|hiphop|artist|bhai))\b", "madarchod", "high"),
+    (r"\bmc\b(?!\s*(?:stan|stanny|square|insaan|rap|hiphop|artist|bhai))\b", "madarchod", "high"),
     (r"\bl[o0]d[u]*\b", "lodu", "medium"),
     (r"\bhar[a@]mi\b", "harami", "medium"),
     (r"\bkamine\b", "kamine", "low"),

@@ -74,7 +74,7 @@ _SARCASTIC_SIGNALS = [
 _TOXIC_SIGNALS = [
     r"\b(chutiya|bhenchod|madarchod|gaand|gandu|lodu|harami|kamine|bastard|"
     r"bakwaas|ghatiya|bekar|bekaar|faltu|ch\*tiya|bkl|g\*\*nd)\b",
-    r"\bmc\b(?!\s*(?:stan|stanny|square|insaan|kash|kode|altaf|head|battle|rap|hiphop|artist|bhai))\b",
+    r"\bmc\b(?!\s*(?:stan|stanny|square|insaan|rap|hiphop|artist|bhai))\b",
     r"\bbc\b(?!\s*(?:rap|battle|bhai))\b",
     r"\[poop_bad\]|\[trash_bad\]|\[angry_frustrated\]",
     r"\b(hate|disgusting|pathetic|idiot|stupid|moron|loser|waste|rubbish)\b",
