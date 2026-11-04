@@ -400,6 +400,8 @@ SVG_REDDIT = '<svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns=
 
 SVG_CSV = '<svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="28" height="28" rx="7" fill="#4F46E5"/><rect x="7" y="6" width="14" height="16" rx="2" stroke="white" stroke-width="1.8"/><line x1="7" y1="11" x2="21" y2="11" stroke="white" stroke-width="1.5"/><line x1="7" y1="16" x2="21" y2="16" stroke="white" stroke-width="1.5"/><line x1="14" y1="11" x2="14" y2="22" stroke="white" stroke-width="1.5"/></svg>'
 
+SVG_SCRAPER = '<svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="28" height="28" rx="7" fill="#0F766E"/><circle cx="14" cy="12" r="5" stroke="white" stroke-width="2"/><line x1="17.5" y1="15.5" x2="22" y2="20" stroke="white" stroke-width="2" stroke-linecap="round"/><circle cx="14" cy="12" r="2" fill="white"/></svg>'
+
 SVG_EMPTY_STATE = '<svg width="180" height="120" viewBox="0 0 180 120" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="20" y="20" width="140" height="80" rx="16" fill="#FFFFFF" stroke="#CCEFE2" stroke-width="2"/><rect x="35" y="35" width="40" height="10" rx="5" fill="#E2F6EE"/><rect x="35" y="52" width="110" height="6" rx="3" fill="#F1F5F9"/><rect x="35" y="64" width="85" height="6" rx="3" fill="#F1F5F9"/><circle cx="130" cy="40" r="10" fill="#E2F6EE"/><path d="M127 40L129 42L133 38" stroke="#0F5132" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
 # ── STRICT PASTEL BENTO-GRID CSS SYSTEM ─────────────────────────
@@ -1504,13 +1506,14 @@ if st.session_state.active_page == "Home":
     </div>
     """, unsafe_allow_html=True)
 
-    # 4 Interactive Platform Selector Cards
-    p1, p2, p3, p4 = st.columns(4)
+    # 5 Interactive Platform Selector Cards
+    p1, p2, p3, p4, p5 = st.columns(5)
     platforms = [
         ("YouTube", SVG_YOUTUBE, "Video & Shorts Comments", p1),
         ("Instagram Reels", SVG_INSTAGRAM, "Reel Commentary & Audio", p2),
         ("Reddit", SVG_REDDIT, "Community Discussions", p3),
         ("CSV / Custom Dataset", SVG_CSV, "Universal Table Upload", p4),
+        ("Live Scraper", SVG_SCRAPER, "Network Interception", p5),
     ]
 
     for name, svg, subtitle, col in platforms:
@@ -1675,29 +1678,125 @@ if st.session_state.active_page == "Home":
                 )
                 st.rerun()
 
-        else:  # CSV / Custom Dataset
-            st.caption("Upload any CSV with consumer comments, reviews, or social commentary.")
-            csv_file = st.file_uploader("Upload CSV File", type=["csv"], label_visibility="collapsed")
-            c_btn1, c_btn2 = st.columns([1.5, 3])
-            with c_btn1:
-                run_csv = st.button("Analyze CSV Dataset", type="primary", use_container_width=True)
-            with c_btn2:
-                demo_csv = st.button("Load Sample Hinglish Dataset", key="demo_csv_btn", use_container_width=True)
+        else:  # Live Scraper (Network Interception) OR CSV / Custom Dataset
+            if st.session_state.selected_platform == "Live Scraper":
+                # ── Live Scraper input drawer ─────────────────────────────
+                st.caption(
+                    "Paste any public URL — the headless browser intercepts hidden "
+                    "JSON/GraphQL network traffic to extract up to 2,000 real comments."
+                )
 
-            if run_csv:
-                if csv_file is not None:
-                    raw_csv = pd.read_csv(csv_file)
-                    text_col = raw_csv.columns[0]
-                    raw_df = pd.DataFrame({"raw_text": raw_csv[text_col].astype(str), "likes": 5, "source": "CSV Upload"})
-                    execute_analysis_flow(raw_df, "CSV Dataset", csv_file.name)
+                scraper_url = st.text_input(
+                    "Target URL",
+                    placeholder="Paste Instagram Reel, Reddit thread, or any public post URL…",
+                    label_visibility="collapsed",
+                    key="scraper_url_input",
+                )
+
+                source_mode = st.selectbox(
+                    "Data Source",
+                    options=[
+                        "Live Scraper (Network Interception)",
+                        "Demo Dataset (Benchmark Hinglish)",
+                    ],
+                    index=0,
+                    key="scraper_source_mode",
+                )
+
+                sample_limit_scraper = st.slider(
+                    "Analysis Depth (Comment Volume)",
+                    min_value=50,
+                    max_value=2000,
+                    value=300,
+                    step=50,
+                    key="depth_scraper",
+                )
+                render_html(
+                    '<div style="font-size:11px; font-weight:600; color:#64748B; '
+                    'margin-top:-6px; margin-bottom:12px;">'
+                    '50–300: Fast (~10s) • 500–1,000: Deep Topic Scan (~25s) • '
+                    '1,500–2,000: Full Viral Audit (~60s)</div>'
+                )
+
+                trigger_btn = st.button(
+                    "⚡ Run Live Scraper & Analyse",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=(
+                        source_mode == "Live Scraper (Network Interception)"
+                        and not bool(scraper_url)
+                    ),
+                    key="trigger_scraper",
+                )
+
+                if trigger_btn:
+                    if source_mode == "Live Scraper (Network Interception)":
+                        if not _PLAYWRIGHT_AVAILABLE:
+                            st.error(
+                                "Playwright is not available in this environment.\n\n"
+                                "Run these two commands in your terminal, then restart the app:\n"
+                                "```\npip install playwright\nplaywright install chromium\n```"
+                            )
+                        else:
+                            with st.spinner(
+                                f"Intercepting network traffic to extract up to "
+                                f"{sample_limit_scraper} comments from {scraper_url[:40]}…"
+                            ):
+                                try:
+                                    raw_df = _scrape_comments(
+                                        scraper_url,
+                                        max_comments=int(sample_limit_scraper),
+                                        platform="Live Scraper",
+                                    )
+                                    execute_analysis_flow(
+                                        df_input=raw_df,
+                                        platform_name="Live Scraper",
+                                        target_title=f"Scraper ({scraper_url[:30]}…)",
+                                        max_comments=int(sample_limit_scraper),
+                                    )
+                                    st.rerun()
+                                except ValueError as exc:
+                                    st.error(str(exc))
+                                except Exception as exc:
+                                    st.error(f"Scraping failed: {exc}")
+
+                    else:  # Demo Dataset
+                        base_demo = load_demo_comments()
+                        mult = max(1, int(sample_limit_scraper) // len(base_demo))
+                        scaled_demo = pd.concat([base_demo] * mult, ignore_index=True).head(
+                            int(sample_limit_scraper)
+                        )
+                        scaled_demo["comment_id"] = [f"demo_{i:04d}" for i in range(len(scaled_demo))]
+                        execute_analysis_flow(
+                            scaled_demo,
+                            "Live Scraper",
+                            f"Benchmark Hinglish ({len(scaled_demo)} comments)",
+                        )
+                        st.rerun()
+
+            else:  # CSV / Custom Dataset
+                st.caption("Upload any CSV with consumer comments, reviews, or social commentary.")
+                csv_file = st.file_uploader("Upload CSV File", type=["csv"], label_visibility="collapsed")
+                c_btn1, c_btn2 = st.columns([1.5, 3])
+                with c_btn1:
+                    run_csv = st.button("Analyze CSV Dataset", type="primary", use_container_width=True)
+                with c_btn2:
+                    demo_csv = st.button("Load Sample Hinglish Dataset", key="demo_csv_btn", use_container_width=True)
+
+                if run_csv:
+                    if csv_file is not None:
+                        raw_csv = pd.read_csv(csv_file)
+                        text_col = raw_csv.columns[0]
+                        raw_df = pd.DataFrame({"raw_text": raw_csv[text_col].astype(str), "likes": 5, "source": "CSV Upload"})
+                        execute_analysis_flow(raw_df, "CSV Dataset", csv_file.name)
+                        st.rerun()
+                    else:
+                        st.error("Please upload a .csv file first.")
+
+                if demo_csv:
+                    base_demo = load_demo_comments()
+                    execute_analysis_flow(base_demo, "CSV Benchmark", "Sample Reviews Dataset")
                     st.rerun()
-                else:
-                    st.error("Please upload a .csv file first.")
-
-            if demo_csv:
-                base_demo = load_demo_comments()
-                execute_analysis_flow(base_demo, "CSV Benchmark", "Sample Reviews Dataset")
-                st.rerun()
 
     # Inline Instant Result View (Rendered directly on Home page when analysis is run)
     if st.session_state.latest_run is not None:
@@ -1859,7 +1958,7 @@ elif st.session_state.active_page == "Dashboard":
                     y="Target",
                     color="Platform",
                     orientation="h",
-                    color_discrete_map={"YouTube": "#FF0000", "Instagram Reels": "#E1306C", "Reddit": "#FF4500", "CSV / Custom Dataset": "#4F46E5"},
+                    color_discrete_map={"YouTube": "#FF0000", "Instagram Reels": "#E1306C", "Reddit": "#FF4500", "CSV / Custom Dataset": "#4F46E5", "Live Scraper": "#0F766E"},
                     range_x=[0, 100],
                 )
                 fig_bar.update_layout(
