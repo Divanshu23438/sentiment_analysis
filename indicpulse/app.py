@@ -48,6 +48,13 @@ from pipeline import (
 # UI Plotly Chart Helpers
 from ui import charts, styles
 
+# Playwright network-interception scraper (Instagram / Reddit)
+try:
+    from indicpulse.scraper import fetch_comments_via_network_interception as _scrape_comments
+    _PLAYWRIGHT_AVAILABLE = True
+except Exception:  # ImportError or playwright not installed
+    _PLAYWRIGHT_AVAILABLE = False
+
 # ── PAGE CONFIGURATION ─────────────────────────────────────────
 st.set_page_config(
     page_title="IndicPulse Studio",
@@ -1582,37 +1589,90 @@ if st.session_state.active_page == "Home":
                 st.rerun()
 
         elif st.session_state.selected_platform in ["Instagram Reels", "Reddit"]:
-            st.caption(f"Enter a public {st.session_state.selected_platform} post link to run semantic and sarcasm analysis.")
-            in_col1, in_col2 = st.columns([3.5, 1.2])
-            with in_col1:
-                post_url = st.text_input(f"{st.session_state.selected_platform} Link", placeholder=f"Paste {st.session_state.selected_platform} post or thread URL...", label_visibility="collapsed")
-            with in_col2:
-                run_other = st.button("Analyze Comments", type="primary", use_container_width=True)
+            platform_label = st.session_state.selected_platform
+            st.caption(
+                f"Paste a public {platform_label} link — the headless browser will intercept "
+                "hidden JSON/GraphQL APIs and extract up to 2,000 real comments."
+            )
+
+            post_url = st.text_input(
+                f"{platform_label} Link",
+                placeholder=f"Paste {platform_label} post or thread URL...",
+                label_visibility="collapsed",
+                key=f"url_input_{platform_label}",
+            )
 
             sample_limit_other = st.slider(
                 "Analysis Depth (Comment Volume)",
-                min_value=100,
+                min_value=50,
                 max_value=2000,
                 value=300,
-                step=100,
+                step=50,
                 key="depth_other",
             )
-            render_html('<div style="font-size:11px; font-weight:600; color:#64748B; margin-top:-6px; margin-bottom:12px;">100–300: Fast (~8s) • 500–1,000: Deep Topic Scan (~20s) • 1,500–2,000: Full Viral Audit (~45s)</div>')
+            render_html(
+                '<div style="font-size:11px; font-weight:600; color:#64748B; '
+                'margin-top:-6px; margin-bottom:12px;">'
+                '50–300: Fast (~10s) • 500–1,000: Deep Topic Scan (~25s) • '
+                '1,500–2,000: Full Viral Audit (~60s)</div>'
+            )
 
-            if st.button("Load Sample Hinglish Dataset", key="demo_other"):
+            # ── Primary scrape button ─────────────────────────────────────
+            run_scrape = st.button(
+                f"⚡ Scrape & Analyse {platform_label}",
+                type="primary",
+                use_container_width=True,
+                disabled=not bool(post_url),
+                key=f"run_scrape_{platform_label}",
+            )
+
+            if run_scrape and post_url:
+                if not _PLAYWRIGHT_AVAILABLE:
+                    st.error(
+                        "Playwright is not available in this environment.\n\n"
+                        "Run these two commands in your terminal, then restart the app:\n"
+                        "```\npip install playwright\nplaywright install chromium\n```"
+                    )
+                else:
+                    with st.spinner(
+                        f"Launching headless browser and intercepting {platform_label} comments… "
+                        "(this may take 30–60 s for large depths)"
+                    ):
+                        try:
+                            scraped_df = _scrape_comments(
+                                post_url,
+                                max_comments=int(sample_limit_other),
+                                platform=platform_label,
+                            )
+                            execute_analysis_flow(
+                                df_input=scraped_df,
+                                platform_name=platform_label,
+                                target_title=post_url,
+                                max_comments=int(sample_limit_other),
+                            )
+                            st.rerun()
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        except Exception as exc:
+                            st.error(f"Scraping failed: {exc}")
+
+            # ── Demo fallback ─────────────────────────────────────────────
+            st.markdown("---")
+            st.caption("No URL? Run the pipeline on a built-in Hinglish benchmark dataset:")
+            if st.button(
+                f"🧪 Run Demo Analysis ({platform_label})",
+                key=f"demo_{platform_label}",
+                use_container_width=True,
+            ):
                 base_demo = load_demo_comments()
                 mult = max(1, int(sample_limit_other) // len(base_demo))
                 scaled_demo = pd.concat([base_demo] * mult, ignore_index=True).head(int(sample_limit_other))
                 scaled_demo["comment_id"] = [f"demo_{i:04d}" for i in range(len(scaled_demo))]
-                execute_analysis_flow(scaled_demo, st.session_state.selected_platform, f"Benchmark Hinglish ({len(scaled_demo)} comments)")
-                st.rerun()
-
-            if run_other:
-                base_demo = load_demo_comments()
-                mult = max(1, int(sample_limit_other) // len(base_demo))
-                scaled_demo = pd.concat([base_demo] * mult, ignore_index=True).head(int(sample_limit_other))
-                scaled_demo["comment_id"] = [f"demo_{i:04d}" for i in range(len(scaled_demo))]
-                execute_analysis_flow(scaled_demo, st.session_state.selected_platform, post_url or f"{st.session_state.selected_platform} Post")
+                execute_analysis_flow(
+                    scaled_demo,
+                    platform_label,
+                    f"Benchmark Hinglish ({len(scaled_demo)} comments)",
+                )
                 st.rerun()
 
         else:  # CSV / Custom Dataset
