@@ -27,9 +27,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Keys that commonly hold comment/post text across platforms
+# Includes e-commerce review keys (Flipkart, Amazon, etc.) and generic web structures
 _TEXT_KEYS = [
     "text", "body", "content", "message", "comment", "caption",
     "description", "snippet", "reply_text", "commentText",
+    "reviewText", "review_text", "title", "summary", "reviewBody",
+    "reviewDescription", "feedbackText", "value", "review",
+]
+
+# Known API error / authentication failure strings to blacklist (case-insensitive).
+# If any extracted text contains one of these substrings, it is discarded.
+_ERROR_BLACKLIST = [
+    "unauthorized logged out query",
+    "login required",
+    "rate limit exceeded",
+    "please wait a few minutes before you try again",
+    "page not found",
+    "checkpoint required",
+    "access denied",
+    "not authorized",
+    "authentication required",
+    "session expired",
+    "forbidden",
 ]
 
 # Keys that commonly hold engagement / like counts
@@ -50,6 +69,10 @@ def _recursive_extract(obj, results: list, depth: int = 0) -> None:
     Walk any JSON structure (dict / list) recursively and append dicts of
     {"text": str, "likes": int} to *results* whenever a text field is found.
 
+    Extracted strings are checked against ``_ERROR_BLACKLIST`` before being
+    accepted — this discards API error messages, login-wall responses, and
+    rate-limit notices that would otherwise pollute the pipeline.
+
     Args:
         obj:     Parsed JSON value (dict, list, or scalar).
         results: Accumulator list — appended in-place.
@@ -66,7 +89,13 @@ def _recursive_extract(obj, results: list, depth: int = 0) -> None:
         for k in _TEXT_KEYS:
             v = obj.get(k)
             if isinstance(v, str) and len(v.strip()) > 5:
-                text_val = v.strip()
+                candidate = v.strip()
+                # ── API error blacklist filter ───────────────────────────
+                candidate_lower = candidate.lower()
+                if any(err in candidate_lower for err in _ERROR_BLACKLIST):
+                    # This string is an API error — skip it entirely
+                    break
+                text_val = candidate
                 break
 
         # Try to extract a like/score count from known keys
@@ -202,12 +231,14 @@ def fetch_comments_via_network_interception(
     valid = [(c["text"], c.get("likes", 0)) for c in comments_data if c.get("text", "").strip()]
     if not valid:
         raise ValueError(
-            f"No comments could be intercepted from:\n  {url}\n\n"
+            "No valid comments found. The platform blocked the request, required a "
+            "logged-in user session, or used an unrecognized data structure.\n\n"
             "Possible causes:\n"
-            "  • The post requires you to be logged in.\n"
-            "  • The platform uses a structure this scraper doesn't recognise yet.\n"
-            "  • Chromium browser is not installed — run: playwright install chromium\n\n"
-            "Use the 'Run Demo Analysis' button below to test the pipeline with sample data."
+            "  • Instagram / Flipkart require authentication — headless scraping is blocked.\n"
+            "  • Rate-limit or CAPTCHA triggered after repeated requests.\n"
+            "  • Chromium browser not installed — run: playwright install chromium\n\n"
+            "Tip: Export comments to a CSV from the platform's web UI and use "
+            "'Upload CSV' instead."
         )
 
     texts, likes = zip(*valid)

@@ -1692,6 +1692,10 @@ if st.session_state.active_page == "Home":
                     label_visibility="collapsed",
                     key="scraper_url_input",
                 )
+                st.caption(
+                    "⚠️ Note: Heavily restricted sites like Instagram or Flipkart may block "
+                    "unauthenticated headless browsers. If scraping fails, use the **Upload CSV** method."
+                )
 
                 source_mode = st.selectbox(
                     "Data Source",
